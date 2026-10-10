@@ -26,13 +26,14 @@ unzip a 52 MB GeoTIFF and clip it yourself in GDAL or QGIS.
 5. [API reference](#5-api-reference)
 6. [OGC compliance](#6-ogc-compliance)
 7. [The hybrid fetch layer](#7-the-hybrid-fetch-layer)
-8. [Implementation choices](#8-implementation-choices)
-9. [Setup and running](#9-setup-and-running)
-10. [Project layout](#10-project-layout)
-11. [Known limitations](#11-known-limitations)
-12. [Bhoonidhi API findings](#12-bhoonidhi-api-findings)
-13. [Future work](#13-future-work)
-14. [Data credit](#14-data-credit)
+8. [Performance](#8-performance)
+9. [Implementation choices](#9-implementation-choices)
+10. [Setup and running](#10-setup-and-running)
+11. [Project layout](#11-project-layout)
+12. [Known limitations](#12-known-limitations)
+13. [Bhoonidhi API findings](#13-bhoonidhi-api-findings)
+14. [Future work](#14-future-work)
+15. [Data credit](#15-data-credit)
 
 ---
 
@@ -434,7 +435,70 @@ A request with no subset asks for all 960 square degrees, so it gets a 413 expla
 
 ---
 
-## 8. Implementation choices
+## 8. Performance
+
+Load-tested with [k6](https://k6.io) at **100 simultaneous users**, with a target of **p95 under 500 ms and under 1%
+errors**. Each request is a random box inside an already-cached tile, so the test measures the service, not
+Bhoonidhi. k6 ran on the same 16-core machine as the service, so it shared the CPU.
+
+Scenarios (`loadtest/coverage.js`):
+
+- **geotiff:** city-sized boxes (5–15 km) as GeoTIFF.
+- **covjson:** small boxes (2–5 km) as CoverageJSON.
+- **mixed:** 70% GeoTIFF, 15% CoverageJSON, 15% HTML/JSON pages.
+
+Each run ramps 0 → 25 → 50 → 100 users over 90 s, then holds 100 users for 2 minutes.
+
+### 8.1 Results
+
+| Scenario | Server | Requests/s | p50 | p95 | p99 | Errors | Target |
+|---|---|---|---|---|---|---|---|
+| mixed | Flask dev server (1 process) | 107 | 827 ms | 1.05 s | 1.12 s | 0% | ✗ |
+| mixed | **gunicorn, 8 × 4 threads** | **500** | 145 ms | **289 ms** | 355 ms | 0% | ✓ |
+| geotiff | Flask dev server | 168 | 552 ms | 631 ms | 659 ms | 0% | ✗ |
+| geotiff | **gunicorn, 8 × 4 threads** | **478** | 141 ms | **319 ms** | 392 ms | 0% | ✓ |
+| covjson | Flask dev server | 55 | 1.63 s | 2.07 s | 2.20 s | 0% | ✗ |
+| covjson | **gunicorn, 8 × 4 threads** | **394** | 174 ms | **369 ms** | 431 ms | 0% | ✓ |
+
+383,066 requests across the six runs, with no errors. The k6 summaries are in `loadtest/results/`.
+
+- **The bottleneck was the single process, not the raster work.** On the dev server even plain HTML pages took about
+  1 s at p95 under load, because every request queued for one Python process.
+- **CoverageJSON gained the most (7×).** Encoding tens of thousands of values as JSON is CPU-bound, and eight processes
+  do it in parallel.
+
+### 8.2 New tiles don't slow everyone else down
+
+A first request for an uncached area holds its thread for the Bhoonidhi download. gunicorn runs **threaded workers**
+(`gthread`), so that wait ties up one thread, not a process. To check, an uncached area (Jaipur) was requested in the
+middle of a 100-user cached load:
+
+| Cached requests | Requests | p50 | p95 | p99 |
+|---|---|---|---|---|
+| Before the download | 11,530 | 173 ms | 340 ms | 405 ms |
+| **During the 19.8 s download** | 10,669 | 177 ms | **349 ms** | 433 ms |
+| After | 20,707 | 181 ms | 360 ms | 430 ms |
+
+The Jaipur request succeeded in 19.8 s, and cached p95 moved by 9 ms. Details: `loadtest/results/cold-fetch-under-load.md`.
+
+### 8.3 Server settings
+
+`gunicorn.conf.py`: 8 worker processes × 4 threads (`WORKERS` and `THREADS` override them), and a **120 s timeout**
+instead of gunicorn's default 30 s, so a slow Bhoonidhi download isn't killed. Tile downloads and mosaic rebuilds were
+already safe across processes (file locks; see [7.3](#73-concurrency-and-safety)).
+
+### 8.4 Reproducing
+
+```bash
+scripts/serve.sh                                                   # gunicorn
+k6 run -e SCENARIO=mixed loadtest/coverage.js                      # also: geotiff, covjson
+k6 run -e SCENARIO=mixed --summary-export result.json loadtest/coverage.js
+DEV=1 scripts/serve.sh                                             # Flask dev server, for the baseline
+```
+
+---
+
+## 9. Implementation choices
 
 | Decision | Choice | Reasoning |
 |---|---|---|
@@ -445,24 +509,25 @@ A request with no subset asks for all 960 square degrees, so it gets a 413 expla
 | Mosaic grid | **Fixed 68–98°E × 6–38°N** | Every request maps to the same pixel grid whether or not its tiles are cached yet |
 | Data source | **Hybrid: fetch on demand, then cache** | Stays tied to Bhoonidhi as the source, without depending on it per request. Live proxying would hit Bhoonidhi's 20 logins/hour and 5-download limits immediately, and download whole tiles for every request. |
 | Fetch mode | **Synchronous** | Standard clients (curl, QGIS, GDAL) expect data in the response. The cost is a 10–13 s first request per new tile. |
-| Download route | **Portal session with OTP** | The documented `/download` endpoint rejects every token (see [section 12](#12-bhoonidhi-api-findings)). The portal route is the one the website and community tools use. |
+| Download route | **Portal session with OTP** | The documented `/download` endpoint rejects every token (see [section 12](#13-bhoonidhi-api-findings)). The portal route is the one the website and community tools use. |
 | API documentation | **Patched OpenAPI document** (`scripts/patch_openapi.py`) | pygeoapi describes the coverage endpoint with shared feature-oriented definitions: `f` claims GeoJSON and omits `GTiff`, `bbox` "selects features" and is an array, and the 200 response is OGC API - Features' document. The patch replaces them for this endpoint only (the shared definitions are correct elsewhere) and documents the 413/503 responses and limits. The result validates as OpenAPI 3.0. |
 | Error handling | **Middleware** in `app.py` | Fixes two pygeoapi API-level gaps without patching pygeoapi |
 | Web pages | **Custom dark theme** in `theme/templates/` | pygeoapi falls back to its own templates for anything not overridden, so only the base layout, landing page (an area picker) and conformance page are replaced. Coverage maps use a terrain colour scale and a keyless dark basemap (Esri World Dark Gray). The conformance page shows class URIs as text: OGC hasn't published pages for the Coverages and Common Part 2 URIs, so linking them gives 404s. |
-| Entry point | **`cartodem_service.app:APP`**, debug off | `pygeoapi serve` runs Flask with `debug=True`, which exposes the Werkzeug debugger. A WSGI app object is also what gunicorn needs later. |
+| Entry point | **`cartodem_service.app:APP`**, debug off | `pygeoapi serve` runs Flask with `debug=True`, which exposes the Werkzeug debugger. A WSGI app object is also what gunicorn loads. |
+| Server | **gunicorn, 8 processes × 4 threads** (`gthread`), 120 s timeout | Python handles one request at a time per process; eight processes gave 3–7× the throughput (see [Performance](#8-performance)). Threads let a request waiting on Bhoonidhi hold one thread instead of a whole worker. |
 
 ---
 
-## 9. Setup and running
+## 10. Setup and running
 
-### 9.1 Prerequisites
+### 10.1 Prerequisites
 
 - Linux or macOS (file locking uses `fcntl`)
 - Python 3.10+ (developed on 3.12)
 - GDAL command-line tools 3.1+ with the COG driver (`gdalinfo`, `gdal_translate`, `gdalbuildvrt`)
 - A Bhoonidhi account ([register here](https://bhoonidhi.nrsc.gov.in/bhoonidhi/login.html)), only for fetching new tiles
 
-### 9.2 Install
+### 10.2 Install
 
 ```bash
 python3 -m venv .venv
@@ -470,7 +535,7 @@ python3 -m venv .venv
 cp .env.example .env        # then fill in BHOONIDHI_USER_ID and BHOONIDHI_PASSWORD
 ```
 
-### 9.3 Log in to Bhoonidhi (operator, about every 6 hours)
+### 10.3 Log in to Bhoonidhi (operator, about every 6 hours)
 
 ```bash
 .venv/bin/python scripts/download_cartodem.py login               # Bhoonidhi emails you an OTP
@@ -480,7 +545,7 @@ cp .env.example .env        # then fill in BHOONIDHI_USER_ID and BHOONIDHI_PASSW
 The session lasts **6 hours** and is **bound to the public IP address** it was created from, so run the login
 on the machine that runs the service.
 
-### 9.4 Warm the cache (optional)
+### 10.4 Warm the cache (optional)
 
 ```bash
 # Default area: Hyderabad and the tile to its east
@@ -495,16 +560,17 @@ Tiles downloaded by hand from the portal can be unzipped into `data/raw/` and pr
 .venv/bin/python scripts/prepare_tiles.py
 ```
 
-### 9.5 Run the service
+### 10.5 Run the service
 
 ```bash
-scripts/serve.sh            # http://localhost:5000
+scripts/serve.sh            # http://localhost:5000, under gunicorn
+DEV=1 scripts/serve.sh      # Flask's single-process development server instead
 ```
 
 `serve.sh` regenerates the OpenAPI document from `pygeoapi-config.yml`, corrects its coverage endpoint with
-`scripts/patch_openapi.py`, then starts `cartodem_service.app`.
+`scripts/patch_openapi.py`, then starts `cartodem_service.app` under gunicorn (`gunicorn.conf.py`).
 
-### 9.6 Test
+### 10.6 Test
 
 ```bash
 .venv/bin/python tests/compliance_test.py
@@ -512,7 +578,7 @@ scripts/serve.sh            # http://localhost:5000
 
 ---
 
-## 10. Project layout
+## 11. Project layout
 
 ```
 .
@@ -528,6 +594,10 @@ scripts/serve.sh            # http://localhost:5000
 │   └── serve.sh              Start the service
 ├── tests/
 │   └── compliance_test.py  39 OGC API - Coverages checks against a running server
+├── loadtest/
+│   ├── coverage.js         k6 load test (geotiff, covjson, mixed scenarios)
+│   └── results/            k6 summaries: Flask dev server and gunicorn runs, cold-fetch test
+├── gunicorn.conf.py        Production server settings
 ├── theme/templates/        Dark web theme: base layout, area-picker landing page, conformance page, CSS
 ├── pygeoapi-config.yml     Service and collection configuration
 ├── requirements.txt
@@ -537,7 +607,7 @@ scripts/serve.sh            # http://localhost:5000
 
 ---
 
-## 11. Known limitations
+## 12. Known limitations
 
 - **Fetching new tiles needs a person every 6 hours.** Bhoonidhi requires an emailed OTP for downloads. When the
   session expires, cached areas keep working, but requests needing new tiles get 503 until the operator logs in again.
@@ -553,8 +623,8 @@ scripts/serve.sh            # http://localhost:5000
 - **No scaling or reprojection of the output.** Coverages are returned at the native 1 arc-second grid in EPSG:4326
   (`bbox-crs` reprojects only the request box).
 - **Tiles not marked `Online = Y`** in Bhoonidhi can't be fetched. They have to be ordered in the portal first (503).
-- **The development server is single-process.** `scripts/serve.sh` uses Flask's built-in server, which isn't meant for
-  production. The code is ready for a multi-process WSGI server (cross-process locks, a WSGI app object); see future work.
+- **One machine.** gunicorn uses one machine's cores, and the cache and locks are local files. Scaling past one
+  machine needs shared storage for the tiles; see future work.
 - **Cache growth.** About 40 MB per tile, and nothing evicts tiles. All of India would be several hundred tiles.
 - **The web pages load assets from third parties:** Bootstrap (jsDelivr), fonts (Google Fonts), map libraries
   (unpkg), basemap tiles (Esri) and place search (Nominatim). The API itself doesn't depend on them.
@@ -562,7 +632,7 @@ scripts/serve.sh            # http://localhost:5000
 
 ---
 
-## 12. Bhoonidhi API findings
+## 13. Bhoonidhi API findings
 
 Found while building this, against the [Bhoonidhi API specification](https://bhoonidhi.nrsc.gov.in/bhoonidhi-api/):
 
@@ -578,10 +648,8 @@ Found while building this, against the [Bhoonidhi API specification](https://bho
 
 ---
 
-## 13. Future work
+## 14. Future work
 
-- **Performance (phase 2):** run under gunicorn with several workers (`cartodem_service.app:APP`), and load-test with
-  k6 or locust to publish requests per second, p95 latency and error rate.
 - **Resilience (phase 3):** nginx in front for response caching and rate limiting, Docker images with several replicas,
   COGs in object storage (S3, R2 or GCS) read over HTTP, and asynchronous prefetch so first requests don't block.
 - **Session renewal:** the portal appears to support renewing a session while it is still fresh. That could stretch one
@@ -592,7 +660,7 @@ Found while building this, against the [Bhoonidhi API specification](https://bho
 
 ---
 
-## 14. Data credit
+## 15. Data credit
 
 CartoDEM is produced by the **National Remote Sensing Centre (NRSC), ISRO** and distributed through
 [Bhoonidhi](https://bhoonidhi.nrsc.gov.in). This service redistributes subsets of it unmodified, apart from lossless
