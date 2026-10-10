@@ -81,18 +81,11 @@ regional elevation, contour and slope layers (`CG_ELEVATION`, `cleanganga:Elevat
 and WMS returns rendered images, not values.
 
 **The portal's own OGC use is visual only.** Its network traffic shows WMTS tile requests with
-`format=image/jpeg` for the map background, then product search and cart servlets for the actual data:
-
-| Portal search traffic | Add-to-cart traffic |
-|---|---|
-| ![Portal search network traffic](docs/screenshots/bhoonidhi-portal-network-search.png) | ![Portal cart network traffic](docs/screenshots/bhoonidhi-portal-network-cart.png) |
+`format=image/jpeg` for the map background, then its own `SatSenServlet`, `ProductSearch` and `CartServlet`
+requests for the actual data.
 
 **Getting CartoDEM today is a manual, whole-tile process.** In the portal you pick an area, a resolution
-filter and the `CartoSat-1_PAN_CartoDEM-30m` product, then download complete tiles:
-
-| Area of interest | Product selection |
-|---|---|
-| ![Portal search by location](docs/screenshots/bhoonidhi-portal-search-aoi.png) | ![Portal CartoDEM product filter](docs/screenshots/bhoonidhi-portal-search-cartodem.png) |
+filter and the `CartoSat-1_PAN_CartoDEM-30m` product, add tiles to a cart, then download complete tiles.
 
 **The documented API cannot download CartoDEM at all.** With a valid token, used within seconds, exactly as
 the specification describes, `/download` always answers
@@ -536,7 +529,6 @@ scripts/serve.sh            # http://localhost:5000
 ├── tests/
 │   └── compliance_test.py  39 OGC API - Coverages checks against a running server
 ├── theme/templates/        Dark web theme: base layout, area-picker landing page, conformance page, CSS
-├── docs/screenshots/       Gap evidence from the Bhoonidhi portal
 ├── pygeoapi-config.yml     Service and collection configuration
 ├── requirements.txt
 ├── .env.example            Template for Bhoonidhi credentials
