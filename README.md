@@ -2,7 +2,7 @@
 
 This repo has the implementation of **OGC API - Coverages** using [pygeoapi](https://pygeoapi.io/).
 
-📖 **Full documentation:** [OGC_API_COVERAGES.md](OGC_API_COVERAGES.md) covers the gap evidence, service design, implementation choices, API reference, compliance results, setup and known limitations.
+**Full documentation:** [OGC_API_COVERAGES.md](OGC_API_COVERAGES.md) covers the gap evidence, service design, implementation choices, API reference, compliance results, setup and known limitations.
 
 ---
 
