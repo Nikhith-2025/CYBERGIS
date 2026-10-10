@@ -1,0 +1,152 @@
+<!doctype html>
+{# Dark theme base layout. Overrides pygeoapi's templates/_base.html; every other
+   pygeoapi page extends this one, so they all get the theme. #}
+<html lang="{{ (locale|lower)[:2] }}" dir="{% trans %}text_direction{% endtrans %}" data-bs-theme="dark">
+
+{% if config['server']['icon'] %}
+{% set icon = config['server']['icon'] %}
+{% else %}
+{% set icon = config['server']['url'] + '/static/img/favicon.ico' %}
+{% endif %}
+
+{% if config['server']['logo'] %}
+{% set logo = config['server']['logo'] %}
+{% else %}
+{% set logo = config['server']['url'] + '/static/img/logo.png' %}
+{% endif %}
+
+  <head>
+    <meta charset="{{ config['server']['encoding'] }}">
+    <title>{% block title %}{% endblock %}{% if not self.title() %}{{ config['metadata']['identification']['title'] }}{% endif %}</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="dark">
+    <meta name="language" content="{{ config['server']['language'] }}">
+    <meta name="description" content="{{ config['metadata']['identification']['title'] }}">
+    <meta name="keywords" content="{{ config['metadata']['identification']['keywords']|join(',') }}">
+    <link rel="shortcut icon" href="{{ icon }}" type="image/x-icon">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css">
+    <style>
+{% include "_theme.css" %}
+    </style>
+    <meta name="twitter:image:src"   content="{% block thumb %}{% endblock %}{% if not self.thumb() %}{{ logo }}{% endif %}" />
+    <meta property="og:image"        content="{{ self.thumb() }}{% if not self.thumb() %}{{ logo }}{% endif %}" />
+    <meta name="twitter:site"        content="{{ config['metadata']['identification']['title'] }}" />
+    <meta property="og:site_name"    content="{{ config['metadata']['identification']['title'] }}" />
+    <meta name="twitter:card"        content="summary_large_image" />
+    <meta name="twitter:title"       content="{{ self.title() }}{% if not self.title() %}{{ config['metadata']['identification']['title'] }}{% endif %}" />
+    <meta property="og:title"        content="{{ self.title() }}{% if not self.title() %}{{ config['metadata']['identification']['title'] }}{% endif %}" />
+    <meta name="twitter:description" content="{{ config['metadata']['identification']['description'] }}" />
+    <meta property="og:description"  content="{{ config['metadata']['identification']['description'] }}" />
+    <meta property="og:type" content="website" />
+    {% for link in data['links'] %}
+      {% if (link['rel']=="self" and link['type']=="text/html") %}
+      <link rel="canonical" href="{{ link['href'].split('?')[0] }}?f=html" />
+      {% elif (link['rel']!="canonical") %}
+      <link rel="{{ link['rel'] }}" type="{{ link['type'] }}" title="{{ link['title'] }}" href="{{ link['href'] }}"/>
+      {% endif %}
+    {% endfor %}
+    {% block extrahead %}
+    {% endblock %}
+  </head>
+  <body>
+  {% set base = config['server']['url'] %}
+  <div class="site-header sticky-top">
+    <div class="container">
+      <header class="d-flex flex-wrap align-items-center justify-content-between py-2 w-100">
+        <a href="{{ base }}" class="site-brand" title="pygeoapi"><img src="{{ base }}/static/img/pygeoapi.png" alt="pygeoapi"></a>
+        <ul class="nav site-nav">
+          <li class="nav-item"><a href="{{ base }}/collections?f=html" class="nav-link">{% trans %}Collections{% endtrans %}</a></li>
+          <li class="nav-item"><a href="{{ base }}/conformance?f=html" class="nav-link">{% trans %}Conformance{% endtrans %}</a></li>
+          <li class="nav-item"><a href="{{ base }}/openapi?f=html" class="nav-link">API</a></li>
+          {% if config['server']['admin'] %}
+          <li class="nav-item"><a href="{{ base }}/admin/config" class="nav-link">{% trans %}Admin{% endtrans %}</a></li>
+          {% endif %}
+          <li class="nav-item"><a href="mailto:{{ config['metadata']['contact']['email'] }}" class="nav-link contact">{% trans %}Contact{% endtrans %}</a></li>
+        </ul>
+      </header>
+    </div>
+  </div>
+  <div class="crumbs">
+    <div class="container d-flex justify-content-between align-items-center flex-wrap">
+      <div>
+        {% block crumbs %}
+        <a href="{{ base }}">{% trans %}Home{% endtrans %}</a>
+        {% endblock %}
+      </div>
+      <div class="formats">
+        {% set links_found = namespace(json='', jsonld='') %}
+        {% for link in data['links'] %}
+        {% if link['rel'] == 'alternate' and link['type'] and link['type'] in ['application/json', 'application/geo+json', 'application/prs.coverage+json'] %}
+        {% set links_found.json = link.href | string | safe %}
+        <a href="{{ link['href'] }}">{% trans %}json{% endtrans %}</a>
+        {% elif link['rel'] == 'alternate' and link['type'] and link['type'] == 'application/ld+json' %}
+        {% set links_found.jsonld = link.href | string | safe %}
+        <a href="{{ link['href'] }}">{% trans %}jsonld{% endtrans %}</a>
+        {% endif %}
+        {% endfor %}
+        {% if links_found.json == '' %}
+        <a href="?f=json">{% trans %}json{% endtrans %}</a>
+        {% endif %}
+        {% if links_found.jsonld == '' %}
+        <a href="?f=jsonld">{% trans %}jsonld{% endtrans %}</a>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+  <main>
+    <div class="container py-4">
+      {% block body %}
+      {% endblock %}
+    </div>
+  </main>
+  <footer class="site-footer py-3">
+    <div class="container d-flex flex-wrap justify-content-between align-items-center gap-2">
+      <span>Elevation data: CartoDEM &copy; NRSC/ISRO via <a href="https://bhoonidhi.nrsc.gov.in">Bhoonidhi</a></span>
+      <span>{% trans %}Powered by {% endtrans %}
+        <a title="pygeoapi" href="https://pygeoapi.io"><img src="{{ base }}/static/img/pygeoapi.png" class="mx-1" alt="pygeoapi" style="height:20px;vertical-align:middle;" /></a>
+        {{ version }}</span>
+    </div>
+  </footer>
+  {% block extrafoot %}
+  {% endblock %}
+  <script>
+    // Coverage map pages: colour elevation with a terrain palette instead of
+    // leaflet-coverage's default blues, which wash out on the dark theme.
+    // pygeoapi's coverage script usually adds its layer before this script runs,
+    // so recolour existing layers now and any added later.
+    if (window.api && window.api.map && window.C) {
+      var terrain = C.linearPalette(['#0f3d2e', '#2f6b3a', '#7fa94a', '#d9cf6b', '#c98a3c', '#8c5a34', '#e9e4dc']);
+      window.api.layers.forEach(function (layer) { layer.palette = terrain; });
+      window.api.map.on('covlayeradd', function (e) { e.layer.palette = terrain; });
+    }
+  </script>
+  <script>
+    // Requests and embeds JSON-LD representation of current page.
+    // Skipped on coverage pages (the URL below drops the query string, so it would
+    // ask for the whole coverage) and on the API page; neither has a JSON-LD form.
+    if (!/\/(coverage|openapi)\/?$/.test(window.location.pathname)) {
+    var xhr = new XMLHttpRequest();
+    {% if links_found.jsonld == '' -%}
+    var path = window.location.protocol + "//" + window.location.host + window.location.pathname + "?f=jsonld";
+    {%- else -%}
+    var path = "{{ links_found.jsonld }}";
+    {%- endif %}
+    xhr.open('GET', path);
+    xhr.onload = function() {
+      if (xhr.status === 200) {
+        var head = document.getElementsByTagName('head')[0];
+        var jsonld_datablock = document.createElement('script');
+        jsonld_datablock.type = "application/ld+json";
+        //remove full context path, because search engines don't expect it here, pyld requires it.
+        jsonld_datablock.textContent = xhr.responseText.replace('docs/jsonldcontext.jsonld','');
+        head.appendChild(jsonld_datablock);
+      }
+    };
+    xhr.send();
+    }
+  </script>
+  </body>
+</html>

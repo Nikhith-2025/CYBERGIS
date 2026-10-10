@@ -1,0 +1,240 @@
+{% extends "_base.html" %}
+{# Landing page: pick an area on a map and get its CartoDEM coverage.
+   Overrides pygeoapi's templates/landing_page.html. The page only builds the
+   standard OGC API - Coverages request URL; it adds no API of its own. #}
+{% block title %}{{ super() }} {% trans %}Home{% endtrans %} {% endblock %}
+{% block extrahead %}
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+{% endblock %}
+{% block body %}
+{% set base = config['server']['url'] %}
+
+<section class="intro mb-4">
+  <h1>{{ config['metadata']['identification']['title'] }}</h1>
+  <p class="text-secondary mb-0">
+    Elevation data for anywhere in India, cut to the area you need. Search for a place or draw a box,
+    then download it as a GeoTIFF.
+  </p>
+</section>
+
+<div class="row g-3">
+  <div class="col-lg-8">
+    <div class="card picker">
+      <form id="search" class="picker-toolbar" autocomplete="off">
+        <input id="search-input" class="form-control" type="search" placeholder="Search a place in India, e.g. Hyderabad">
+        <button class="btn btn-ghost" type="submit">Search</button>
+        <button id="draw" class="btn btn-ghost" type="button">Draw area</button>
+        <button id="clear-map" class="btn btn-ghost" type="button" disabled>Clear</button>
+      </form>
+      <div id="picker-map"></div>
+      <div id="map-hint" class="picker-hint"></div>
+    </div>
+  </div>
+
+  <div class="col-lg-4">
+    <div class="card area-panel">
+      <div class="card-body">
+        <div class="d-flex justify-content-between align-items-center mb-3">
+          <h2 class="h6 text-uppercase text-secondary mb-0">Your area</h2>
+          <button id="clear" class="copy-btn" type="button" disabled>Clear</button>
+        </div>
+        <div class="row g-2 mb-2">
+          <div class="col-6"><label class="form-label" for="w">West (°E)</label><input id="w" class="form-control coord" type="number" step="0.01"></div>
+          <div class="col-6"><label class="form-label" for="e">East (°E)</label><input id="e" class="form-control coord" type="number" step="0.01"></div>
+          <div class="col-6"><label class="form-label" for="s">South (°N)</label><input id="s" class="form-control coord" type="number" step="0.01"></div>
+          <div class="col-6"><label class="form-label" for="n">North (°N)</label><input id="n" class="form-control coord" type="number" step="0.01"></div>
+        </div>
+        <p id="status" class="status mb-3">No area selected yet.</p>
+        <div class="d-grid gap-2 mb-3">
+          <a id="download" class="btn btn-red disabled" aria-disabled="true">Download GeoTIFF</a>
+          <a id="view" class="btn btn-ghost disabled" aria-disabled="true" target="_blank" rel="noopener">View on map</a>
+        </div>
+        <div class="request">
+          <div class="d-flex justify-content-between align-items-center mb-1">
+            <span class="text-secondary small">Request URL</span>
+            <button id="copy" class="copy-btn" type="button" disabled>Copy</button>
+          </div>
+          <code id="url" class="request-url">—</code>
+        </div>
+        <p class="small text-secondary mt-3 mb-0">
+          The first request for a new area takes 10–30 s while the tile is fetched from Bhoonidhi. After that it's instant.
+        </p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<nav class="quick-links mt-4">
+  <a href="{{ base }}/collections/cartodem?f=html">Collection</a>
+  <a href="{{ base }}/openapi?f=html">API documentation</a>
+  <a href="{{ base }}/conformance?f=html">Conformance</a>
+  <a href="{{ base }}/openapi?f=json">OpenAPI JSON</a>
+</nav>
+{% endblock %}
+
+{% block extrafoot %}
+<script>
+(function () {
+  var COVERAGE = {{ (base + '/collections/cartodem/coverage') | tojson }};
+  var EXTENT = [68, 6, 98, 38];            // west, south, east, north of the collection
+  var LIMIT_GTIFF = 4, LIMIT_VIEW = 0.1;    // square degrees, as enforced by the service
+  var PLACE_BOX = 0.06;                     // half-size of the box around a searched point, degrees
+
+  var map = L.map('picker-map', { zoomSnap: 0.5 });
+  map.fitBounds([[EXTENT[1], EXTENT[0]], [EXTENT[3], EXTENT[2]]]);
+  L.tileLayer({{ config['server']['map']['url'] | tojson }}, {
+    maxZoom: 18,
+    attribution: {{ config['server']['map']['attribution'] | tojson }} +
+      ' · Search &copy; <a href="https://nominatim.openstreetmap.org">Nominatim</a>'
+  }).addTo(map);
+  L.rectangle([[EXTENT[1], EXTENT[0]], [EXTENT[3], EXTENT[2]]],
+    { color: '#8c8c8c', weight: 1, dashArray: '4 6', fill: false, interactive: false }).addTo(map);
+
+  var inputs = { w: el('w'), s: el('s'), e: el('e'), n: el('n') };
+  var box = null, rect = null, drawing = false, corner = null, preview = null;
+
+  var DEFAULT_HINT = 'Search for a place, or press <b>Draw area</b> and click two corners on the map.';
+
+  function el(id) { return document.getElementById(id); }
+  function fmt(v) { return String(Math.round(v * 10000) / 10000); }
+  function hint(html) { el('map-hint').innerHTML = html; }
+  hint(DEFAULT_HINT);
+
+  function setBox(b, fit) {
+    box = b;
+    ['w', 's', 'e', 'n'].forEach(function (k) { inputs[k].value = fmt(b[k]); });
+    var bounds = [[b.s, b.w], [b.n, b.e]];
+    if (rect) { rect.setBounds(bounds); } else {
+      rect = L.rectangle(bounds, { color: '#e50914', weight: 2, fillOpacity: 0.15 }).addTo(map);
+    }
+    if (fit) { map.fitBounds(bounds, { padding: [40, 40], maxZoom: 12 }); }
+    update();
+  }
+
+  function enable(id, on, href) {
+    var a = el(id);
+    a.classList.toggle('disabled', !on);
+    a.setAttribute('aria-disabled', String(!on));
+    if (on) { a.href = href; } else { a.removeAttribute('href'); }
+  }
+
+  function update() {
+    var b = box, msg, ok = false, viewOk = false, url = '';
+    if (!b) { msg = 'No area selected yet.'; }
+    else if (!(b.w < b.e && b.s < b.n)) { msg = 'West must be less than East, and South less than North.'; }
+    else if (b.e <= EXTENT[0] || b.w >= EXTENT[2] || b.n <= EXTENT[1] || b.s >= EXTENT[3]) {
+      msg = 'This area is outside the coverage (68–98°E, 6–38°N).';
+    } else {
+      var deg2 = (b.e - b.w) * (b.n - b.s);
+      var midLat = (b.s + b.n) / 2 * Math.PI / 180;
+      var kmW = (b.e - b.w) * 111.32 * Math.cos(midLat), kmH = (b.n - b.s) * 110.57;
+      var size = Math.round(kmW) + ' × ' + Math.round(kmH) + ' km';
+      ok = deg2 <= LIMIT_GTIFF;
+      viewOk = deg2 <= LIMIT_VIEW;
+      url = COVERAGE + '?bbox=' + [b.w, b.s, b.e, b.n].map(fmt).join(',');
+      if (!ok) { msg = size + ' — too large. The limit is ' + LIMIT_GTIFF + ' square degrees (about 4 tiles).'; }
+      else if (!viewOk) { msg = size + ' — fine to download. Too large to view in the browser; draw a smaller box to view it.'; }
+      else { msg = size + ' — ready.'; }
+    }
+    var status = el('status');
+    status.textContent = msg;
+    status.className = 'status mb-3 ' + (!b ? '' : ok ? 'ok' : 'bad');
+
+    enable('download', ok, url + '&f=GTiff');
+    el('download').download = ok ? 'cartodem_' + [b.w, b.s, b.e, b.n].map(fmt).join('_') + '.tif' : '';
+    enable('view', ok && viewOk, url + '&f=html');
+    el('url').textContent = ok ? url + '&f=GTiff' : '—';
+    el('copy').disabled = !ok;
+    el('clear').disabled = !b;
+    el('clear-map').disabled = !b;
+  }
+
+  function stopDrawing() {
+    drawing = false; corner = null;
+    if (preview) { map.removeLayer(preview); preview = null; }
+    el('draw').classList.remove('active');
+    map.getContainer().style.cursor = '';
+  }
+
+  // Clear (panel and map toolbar): back to the starting state
+  function clearSelection() {
+    stopDrawing();
+    if (rect) { map.removeLayer(rect); rect = null; }
+    box = null;
+    ['w', 's', 'e', 'n'].forEach(function (k) { inputs[k].value = ''; });
+    el('search-input').value = '';
+    hint(DEFAULT_HINT);
+    map.fitBounds([[EXTENT[1], EXTENT[0]], [EXTENT[3], EXTENT[2]]]);
+    update();
+  }
+  el('clear').addEventListener('click', clearSelection);
+  el('clear-map').addEventListener('click', clearSelection);
+
+  // Typing coordinates by hand
+  Object.keys(inputs).forEach(function (k) {
+    inputs[k].addEventListener('change', function () {
+      var v = {}; for (var key in inputs) { v[key] = parseFloat(inputs[key].value); }
+      if ([v.w, v.s, v.e, v.n].every(isFinite)) { setBox(v, true); }
+    });
+  });
+
+  // Drawing: click two opposite corners
+  el('draw').addEventListener('click', function () {
+    var start = !drawing;
+    stopDrawing();
+    if (start) {
+      drawing = true;
+      this.classList.add('active');
+      map.getContainer().style.cursor = 'crosshair';
+    }
+    hint(start ? 'Click the <b>first corner</b> of your area.' : DEFAULT_HINT);
+  });
+  map.on('click', function (ev) {
+    if (!drawing) { return; }
+    if (!corner) {
+      corner = ev.latlng;
+      hint('Now click the <b>opposite corner</b>.');
+      return;
+    }
+    var a = corner, c = ev.latlng;
+    stopDrawing();
+    hint('Area selected. Draw again or search to change it.');
+    setBox({ w: Math.min(a.lng, c.lng), e: Math.max(a.lng, c.lng),
+             s: Math.min(a.lat, c.lat), n: Math.max(a.lat, c.lat) }, false);
+  });
+  map.on('mousemove', function (ev) {
+    if (!drawing || !corner) { return; }
+    var bounds = [corner, ev.latlng];
+    if (preview) { preview.setBounds(bounds); } else {
+      preview = L.rectangle(bounds, { color: '#e50914', weight: 1, dashArray: '4 4', fillOpacity: 0.08, interactive: false }).addTo(map);
+    }
+  });
+
+  // Place search (OpenStreetMap Nominatim, India only)
+  el('search').addEventListener('submit', function (ev) {
+    ev.preventDefault();
+    var q = el('search-input').value.trim();
+    if (!q) { return; }
+    hint('Searching for “' + q.replace(/</g, '&lt;') + '”…');
+    fetch('https://nominatim.openstreetmap.org/search?format=jsonv2&limit=1&countrycodes=in&q=' + encodeURIComponent(q))
+      .then(function (r) { return r.json(); })
+      .then(function (results) {
+        if (!results.length) { hint('No place found for “' + q.replace(/</g, '&lt;') + '”. Try another name.'); return; }
+        var p = results[0], lat = parseFloat(p.lat), lon = parseFloat(p.lon);
+        hint('<b>' + p.display_name.replace(/</g, '&lt;') + '</b> — box drawn around it. Draw again to adjust.');
+        setBox({ w: lon - PLACE_BOX, e: lon + PLACE_BOX, s: lat - PLACE_BOX, n: lat + PLACE_BOX }, true);
+      })
+      .catch(function () { hint('Place search is unavailable right now. Draw the area instead.'); });
+  });
+
+  el('copy').addEventListener('click', function () {
+    var btn = this;
+    navigator.clipboard.writeText(el('url').textContent).then(function () {
+      btn.textContent = 'Copied';
+      setTimeout(function () { btn.textContent = 'Copy'; }, 1500);
+    });
+  });
+})();
+</script>
+{% endblock %}

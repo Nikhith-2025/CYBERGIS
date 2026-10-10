@@ -1,0 +1,6 @@
+pygeoapi==0.24.0
+rasterio==1.5.2
+numpy==2.5.4
+pyproj==3.8.0
+requests==2.34.2
+python-dotenv==1.2.4

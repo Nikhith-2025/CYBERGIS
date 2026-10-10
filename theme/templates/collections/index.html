@@ -1,0 +1,78 @@
+{% extends "_base.html" %}
+{# Collections page: one card per collection, with an extent preview map.
+   Overrides pygeoapi's templates/collections/index.html. #}
+{% block title %}{{ super() }} {% trans %}Collections{% endtrans %}{% endblock %}
+{% block crumbs %}{{ super() }}
+/ <a href="{{ data['collections_path'] }}">{% trans %}Collections{% endtrans %}</a>
+{% endblock %}
+{% block extrahead %}
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+{% endblock %}
+{% block body %}
+{% set base = config['server']['url'] %}
+{% set collections = data['collections'] %}
+<div class="page-head">
+  <h1>{% trans %}Collections{% endtrans %}</h1>
+  <span class="count">{{ collections | length }} in this service</span>
+</div>
+
+<div class="row g-4">
+  {% for col in collections %}
+  {% set href = data['collections_path'] ~ '/' ~ col.id %}
+  {% set bbox = col.get('extent', {}).get('spatial', {}).get('bbox', [[]])[0] %}
+  {% set grid = col.get('extent', {}).get('spatial', {}).get('grid', []) %}
+  {% set is_coverage = col['links'] | selectattr('rel', 'equalto', 'http://www.opengis.net/def/rel/ogc/1.0/coverage') | list | length > 0 %}
+  <div class="col-md-6 col-xl-4">
+    <article class="collection-card">
+      <div class="preview" {% if bbox | length == 4 %}data-bbox="{{ bbox | join(',') }}"{% endif %}>
+        <span class="tag">{{ 'Coverage' if is_coverage else (col.get('itemType') or 'Collection') }}</span>
+      </div>
+      <div class="body">
+        <h2><a href="{{ href }}?f=html">{{ col['title'] | striptags }}</a></h2>
+        <p class="desc">{{ col['description'] | striptags | truncate(170) }}</p>
+        <dl class="facts">
+          {% if bbox | length == 4 %}
+          <dt>Extent</dt><dd>{{ bbox[0] }}–{{ bbox[2] }}°E, {{ bbox[1] }}–{{ bbox[3] }}°N</dd>
+          {% endif %}
+          {% if grid | length == 2 %}
+          <dt>Grid</dt><dd>{{ '{:,}'.format(grid[0]['cellsCount']) }} × {{ '{:,}'.format(grid[1]['cellsCount']) }} px</dd>
+          <dt>Resolution</dt><dd>{{ '%g' | format(grid[0]['resolution'] * 3600) }}″ (about {{ (grid[0]['resolution'] * 111320) | round | int }} m)</dd>
+          {% endif %}
+          {% if col.get('keywords') %}
+          <dt>Keywords</dt><dd>{{ col['keywords'] | join(', ') }}</dd>
+          {% endif %}
+        </dl>
+        <div class="actions">
+          <a class="btn btn-red btn-sm px-3" href="{{ href }}?f=html">Open</a>
+          {% if is_coverage %}
+          <a class="btn btn-ghost btn-sm px-3" href="{{ base }}/">Pick an area</a>
+          {% endif %}
+          <a class="btn btn-ghost btn-sm px-3" href="{{ href }}/schema?f=html">Schema</a>
+        </div>
+      </div>
+    </article>
+  </div>
+  {% endfor %}
+</div>
+{% endblock %}
+
+{% block extrafoot %}
+<script>
+  // Static preview map of each collection's extent
+  document.querySelectorAll('.collection-card .preview[data-bbox]').forEach(function (el) {
+    var b = el.dataset.bbox.split(',').map(Number);
+    var bounds = [[b[1], b[0]], [b[3], b[2]]];
+    var map = L.map(el, {
+      zoomControl: false, dragging: false, scrollWheelZoom: false,
+      doubleClickZoom: false, boxZoom: false, keyboard: false, touchZoom: false
+    });
+    map.attributionControl.setPrefix(false);
+    L.tileLayer({{ config['server']['map']['url'] | tojson }}, {
+      maxZoom: 18, attribution: {{ config['server']['map']['attribution'] | tojson }}
+    }).addTo(map);
+    L.rectangle(bounds, { color: '#e50914', weight: 2, fillOpacity: 0.12, interactive: false }).addTo(map);
+    map.fitBounds(bounds, { padding: [14, 14] });
+  });
+</script>
+{% endblock %}

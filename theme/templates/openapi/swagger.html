@@ -1,0 +1,101 @@
+{% extends "_base.html" %}
+{# API documentation (Swagger UI) inside the site layout, restyled to the black and red theme.
+   Overrides pygeoapi's templates/openapi/swagger.html. #}
+{% block title %}{{ super() }} API{% endblock %}
+{% block crumbs %}{{ super() }}
+/ <a href="{{ config['server']['url'] }}/openapi?f=html">API</a>
+{% endblock %}
+{% block extrahead %}
+<link rel="stylesheet" href="https://unpkg.com/swagger-ui-dist@5.17.14/swagger-ui.css">
+<style>
+  /* --- Swagger UI, dark --- */
+  .swagger-ui, .swagger-ui .info .title, .swagger-ui .info p, .swagger-ui .info li, .swagger-ui .info table,
+  .swagger-ui .opblock-tag, .swagger-ui .opblock .opblock-summary-description, .swagger-ui .opblock .opblock-summary-path,
+  .swagger-ui .opblock-description-wrapper p, .swagger-ui .opblock-external-docs-wrapper p, .swagger-ui .opblock-title_normal p,
+  .swagger-ui .parameter__name, .swagger-ui .parameter__type, .swagger-ui .parameter__in, .swagger-ui .parameter__deprecated,
+  .swagger-ui table thead tr td, .swagger-ui table thead tr th, .swagger-ui .response-col_status, .swagger-ui .response-col_links,
+  .swagger-ui .responses-inner h4, .swagger-ui .responses-inner h5, .swagger-ui .opblock .opblock-section-header h4,
+  .swagger-ui .tab li, .swagger-ui .model-title, .swagger-ui .model, .swagger-ui section.models h4, .swagger-ui .prop-type,
+  .swagger-ui .markdown p, .swagger-ui .markdown li, .swagger-ui .renderedMarkdown p, .swagger-ui label,
+  .swagger-ui .servers-title, .swagger-ui .servers > label, .swagger-ui .scheme-container .schemes-title,
+  .swagger-ui .response-control-media-type__title, .swagger-ui .responses-table .response-col_description__inner p,
+  .swagger-ui .info .base-url, .swagger-ui .model-toggle:after, .swagger-ui .dialog-ux .modal-ux-header h3 {
+    color: var(--text) !important;
+  }
+  .swagger-ui { font-family: var(--bs-font-sans-serif); }
+  .swagger-ui .wrapper { padding: 0; max-width: none; }
+  .swagger-ui .info { margin: 0 0 1.5rem; }
+  .swagger-ui .info .title { font-size: 2rem; font-weight: 700; }
+  .swagger-ui .info .title small { background: var(--surface-2) !important; }
+  .swagger-ui .info .title small pre { color: var(--muted) !important; }
+  .swagger-ui .info a, .swagger-ui a.nostyle, .swagger-ui .info .link { color: #fff !important; }
+  .swagger-ui .scheme-container { background: var(--surface); box-shadow: none; border: 1px solid var(--border); border-radius: 8px; padding: 1rem; margin: 0 0 1.5rem; }
+  .swagger-ui .opblock-tag { border-bottom: 1px solid var(--border); font-size: 1.2rem; }
+  .swagger-ui .opblock-tag small { color: var(--muted) !important; }
+  .swagger-ui .opblock-tag:hover { background: rgba(255, 255, 255, .03); }
+  .swagger-ui .opblock { background: var(--surface) !important; border: 1px solid var(--border) !important; border-radius: 8px; box-shadow: none; }
+  .swagger-ui .opblock .opblock-summary { border-bottom: 1px solid var(--border) !important; }
+  .swagger-ui .opblock .opblock-summary-method { background: var(--red) !important; border-radius: 4px; min-width: 70px; }
+  .swagger-ui .opblock.is-open .opblock-summary { border-bottom-color: var(--border) !important; }
+  .swagger-ui .opblock .opblock-section-header { background: var(--surface-2) !important; box-shadow: none; }
+  .swagger-ui .opblock-body, .swagger-ui .responses-wrapper, .swagger-ui .parameters-container,
+  .swagger-ui .opblock-description-wrapper, .swagger-ui .responses-inner { background: transparent !important; }
+  .swagger-ui table tbody tr td { border-color: var(--border) !important; }
+  .swagger-ui table thead tr td, .swagger-ui table thead tr th { border-bottom: 1px solid var(--border) !important; }
+  .swagger-ui .parameter__name.required:after, .swagger-ui .parameter__name.required span { color: var(--red) !important; }
+  .swagger-ui input[type=text], .swagger-ui input[type=search], .swagger-ui textarea, .swagger-ui select {
+    background: var(--bg-deep) !important; color: var(--text) !important; border: 1px solid var(--border) !important;
+  }
+  .swagger-ui select { background-image: none; }
+  .swagger-ui .btn { color: var(--text); border-color: var(--border); background: transparent; box-shadow: none; }
+  .swagger-ui .btn:hover { border-color: #fff; color: #fff; box-shadow: none; }
+  .swagger-ui .btn.execute { background: var(--red) !important; border-color: var(--red) !important; color: #fff !important; }
+  .swagger-ui .btn.execute:hover { background: var(--red-hover) !important; }
+  .swagger-ui .btn.cancel { border-color: var(--red) !important; color: #ff8a8f !important; }
+  .swagger-ui .try-out__btn { border-color: var(--red) !important; color: #fff !important; }
+  .swagger-ui .highlight-code, .swagger-ui .microlight, .swagger-ui .opblock-body pre.microlight,
+  .swagger-ui .responses-inner pre, .swagger-ui .curl-command pre, .swagger-ui .request-url pre {
+    background: var(--bg-deep) !important; border: 1px solid var(--border); border-radius: 6px; color: var(--text) !important;
+  }
+  .swagger-ui .tab li:first-of-type:after { background: var(--border); }
+  .swagger-ui .tab li.active { color: #fff !important; }
+  .swagger-ui section.models { border: 1px solid var(--border) !important; border-radius: 8px; background: var(--surface); }
+  .swagger-ui section.models .model-container { background: var(--surface-2) !important; }
+  .swagger-ui section.models .model-container:hover { background: #2c2c2c !important; }
+  .swagger-ui .model-box { background: transparent; }
+  .swagger-ui .prop-format, .swagger-ui .prop-enum { color: var(--muted) !important; }
+  .swagger-ui svg:not(:root) { fill: var(--text); }
+  .swagger-ui .arrow, .swagger-ui .expand-operation svg { fill: var(--muted) !important; }
+  .swagger-ui .copy-to-clipboard { background: var(--surface-2); }
+  .swagger-ui .loading-container .loading:after { color: var(--muted); }
+  .swagger-ui .dialog-ux .modal-ux { background: var(--surface); border-color: var(--border); }
+  .swagger-ui .dialog-ux .modal-ux-header { border-bottom-color: var(--border); }
+  .swagger-ui .response-col_status .response-undocumented { color: var(--muted); }
+  .swagger-ui .responses-table .response .response-col_status { color: var(--ok) !important; }
+  .swagger-ui .opblock-control-arrow, .swagger-ui .authorization__btn { fill: var(--muted); }
+  .swagger-ui .markdown code, .swagger-ui .renderedMarkdown code { color: #ff8a8f !important; background: var(--surface-2) !important; }
+</style>
+{% endblock %}
+{% block body %}
+<div id="swagger-ui"></div>
+{% endblock %}
+{% block extrafoot %}
+<script src="https://unpkg.com/swagger-ui-dist@5.17.14/swagger-ui-bundle.js"></script>
+<script>
+  window.ui = SwaggerUIBundle({
+    url: {{ (data['openapi-document-path'] ~ '?f=json') | tojson }},
+    dom_id: '#swagger-ui',
+    deepLinking: true,
+    defaultModelsExpandDepth: -1,
+    presets: [SwaggerUIBundle.presets.apis],
+    layout: 'BaseLayout',
+    // pygeoapi's OpenAPI document lists tags for API types this service doesn't
+    // use (edr, features, maps, ...); hide the groups that have no endpoints
+    onComplete: function () {
+      document.querySelectorAll('.opblock-tag-section').forEach(function (section) {
+        if (!section.querySelector('.opblock')) { section.style.display = 'none'; }
+      });
+    }
+  });
+</script>
+{% endblock %}

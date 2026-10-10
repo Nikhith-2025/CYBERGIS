@@ -1,0 +1,80 @@
+{% extends "_base.html" %}
+{# Conformance page. Overrides pygeoapi's templates/conformance.html.
+   Conformance class URIs are identifiers that clients compare as strings; many
+   are not published as web pages by OGC (they 404), so they are shown as text,
+   grouped by standard, with a link to each standard's document instead. #}
+{% block title %}{{ super() }} {% trans %}Conformance{% endtrans %} {% endblock %}
+{% block crumbs %}{{ super() }}
+/ <a href="./conformance">{% trans %}Conformance{% endtrans %}</a>
+{% endblock %}
+{% block body %}
+{% set standards = [
+  ('http://www.opengis.net/spec/ogcapi-coverages-1/1.0/conf/', 'OGC API - Coverages - Part 1: Core',
+   'https://docs.ogc.org/DRAFTS/19-087.html'),
+  ('http://www.opengis.net/spec/ogcapi-common-1/1.0/conf/', 'OGC API - Common - Part 1: Core',
+   'https://docs.ogc.org/is/19-072/19-072.html'),
+  ('http://www.opengis.net/spec/ogcapi-common-2/1.0/conf/', 'OGC API - Common - Part 2: Geospatial Data',
+   'https://docs.ogc.org/DRAFTS/20-024.html'),
+] %}
+{% set meaning = {
+  'core': 'The core requirements of the standard',
+  'landing-page': 'A landing page linking to the API definition, conformance and data',
+  'json': 'Resources are available as JSON',
+  'html': 'Resources are available as HTML for browsing',
+  'oas30': 'The API is described by an OpenAPI 3.0 document',
+  'collections': 'Data is organised in collections, listed at /collections',
+  'geodata-coverage': 'Collections link to their coverage',
+  'coverage-subset': 'Spatial subsetting with subset=Lat(…),Long(…)',
+  'coverage-bbox': 'Spatial subsetting with bbox=minLon,minLat,maxLon,maxLat',
+  'coverage-rangesubset': 'Choosing fields with properties=…',
+  'coverage-datetime': 'Temporal subsetting with datetime=… (accepted; CartoDEM has no time axis)',
+} %}
+<section id="conformance">
+  <h1 class="h2">{% trans %}Conformance{% endtrans %}</h1>
+  <p class="text-secondary">
+    The OGC conformance classes this service implements. Each class is identified by a URI that client software
+    compares as text. OGC doesn't publish a web page for every URI, so they are listed here as identifiers,
+    with a link to the standard that defines them.
+  </p>
+
+  {% set listed = namespace(uris=[]) %}
+  {% for prefix, title, doc in standards %}
+    {% set classes = [] %}
+    {% for uri in data['conformsTo'] if uri.startswith(prefix) %}{% set _ = classes.append(uri) %}{% endfor %}
+    {% if classes %}
+    <div class="card mb-3">
+      <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2">
+        <strong>{{ title }}</strong>
+        <a href="{{ doc }}" class="small">Read the standard</a>
+      </div>
+      <table class="table mb-0 conformance-table">
+        <tbody>
+        {% for uri in classes %}
+          {% set slug = uri[prefix | length:] %}
+          {% set listed.uris = listed.uris + [uri] %}
+          <tr>
+            <td class="slug"><code>{{ slug }}</code></td>
+            <td>{{ meaning.get(slug, '') }}<div class="uri">{{ uri }}</div></td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% endif %}
+  {% endfor %}
+
+  {% set others = data['conformsTo'] | reject('in', listed.uris) | list %}
+  {% if others %}
+  <div class="card mb-3">
+    <div class="card-header"><strong>Other</strong></div>
+    <table class="table mb-0 conformance-table">
+      <tbody>
+      {% for uri in others %}
+        <tr><td class="uri" colspan="2">{{ uri }}</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+</section>
+{% endblock %}

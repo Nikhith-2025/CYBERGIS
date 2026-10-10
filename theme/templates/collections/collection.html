@@ -1,0 +1,176 @@
+{% extends "_base.html" %}
+{# Collection details page. Overrides pygeoapi's templates/collections/collection.html. #}
+{% block title %}{{ super() }} {{ data['title'] }} {% endblock %}
+{% block crumbs %}{{ super() }}
+/ <a href="{{ data['collections_path'] }}">{% trans %}Collections{% endtrans %}</a>
+/ <a href="./{{ data['id'] }}">{{ data['title'] | truncate( 25 ) }}</a>
+{% endblock %}
+{% block extrahead %}
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+{% endblock %}
+
+{% block body %}
+{% set base = config['server']['url'] %}
+{% set href = data['collections_path'] ~ '/' ~ data['id'] %}
+{% set spatial = data.get('extent', {}).get('spatial', {}) %}
+{% set bbox = spatial.get('bbox', [[]])[0] %}
+{% set grid = spatial.get('grid', []) %}
+{% set coverage_rel = 'http://www.opengis.net/def/rel/ogc/1.0/coverage' %}
+{% set coverage_links = data['links'] | selectattr('rel', 'equalto', coverage_rel) | list %}
+{% set is_coverage = coverage_links | length > 0 %}
+{% set format_names = {'image/tiff': 'GeoTIFF', 'application/prs.coverage+json': 'CoverageJSON', 'text/html': 'HTML'} %}
+
+<section class="collection-head mb-4">
+  <span class="tag">{{ 'Coverage' if is_coverage else (data.get('itemType') or 'Collection') }}</span>
+  <h1>{{ data['title'] }}</h1>
+  <p class="lead-desc">{{ data['description'] }}</p>
+  {% for kw in data.get('keywords', []) %}<span class="badge bg-primary me-1">{{ kw }}</span>{% endfor %}
+</section>
+
+<div class="row g-4">
+  <div class="col-lg-8">
+    <div class="card overflow-hidden"><div id="collection-map"></div></div>
+
+    <h2 class="section-h">Details</h2>
+    <div class="card">
+      <div class="card-body">
+        <dl class="detail-grid mb-0">
+          {% if bbox | length == 4 %}
+          <dt>Extent</dt><dd>{{ bbox[0] }}–{{ bbox[2] }}°E, {{ bbox[1] }}–{{ bbox[3] }}°N</dd>
+          {% endif %}
+          {% if spatial.get('crs') %}
+          <dt>Coordinates</dt><dd>WGS 84 longitude/latitude <span class="text-secondary">({{ spatial['crs'].split('/')[-1] }})</span></dd>
+          {% endif %}
+          {% if grid | length == 2 %}
+          <dt>Grid</dt><dd>{{ '{:,}'.format(grid[0]['cellsCount']) }} × {{ '{:,}'.format(grid[1]['cellsCount']) }} pixels</dd>
+          <dt>Resolution</dt><dd>{{ '%g' | format(grid[0]['resolution'] * 3600) }} arc-second (about {{ (grid[0]['resolution'] * 111320) | round | int }} m)</dd>
+          {% endif %}
+          <dt>Fields</dt><dd id="fields" class="text-secondary">Loading…</dd>
+        </dl>
+      </div>
+    </div>
+
+    {% if data['itemType'] in ['feature', 'record'] %}
+    <h2 class="section-h">Items</h2>
+    <div class="card"><div class="card-body d-flex gap-2 flex-wrap">
+      <a class="btn btn-red btn-sm px-3" href="{{ href }}/items">Browse items</a>
+      <a class="btn btn-ghost btn-sm px-3" href="{{ href }}/queryables">Queryables</a>
+    </div></div>
+    {% endif %}
+
+    {% if data['data_queries'] %}
+    <h2 class="section-h">Data queries</h2>
+    <div class="card"><table class="table mb-0">
+      {% for query_name, query in data['data_queries'].items() %}
+      <tr><td>{{ query_name }}</td><td><a href="{{ query['link']['href'] }}">{{ query['link']['href'] }}</a></td></tr>
+      {% endfor %}
+    </table></div>
+    {% endif %}
+
+    {% if 'parameter_names' in data %}
+    <h2 class="section-h">Parameters</h2>
+    <div class="card"><table class="table mb-0">
+      <thead><tr><th>id</th><th>name</th><th>units</th></tr></thead>
+      {% for parameter in data['parameter_names'].values() %}
+      <tr><td>{{ parameter['id'] }}</td>
+          <td>{{ parameter['observedProperty']['label'].values() | first }}</td>
+          <td>{{ parameter['unit']['symbol']['value'] }}</td></tr>
+      {% endfor %}
+    </table></div>
+    {% endif %}
+
+    <h2 class="section-h">Links</h2>
+    <div class="card">
+      <table class="table mb-0 links-table">
+        <tbody>
+        {% for link in data['links'] if link['rel'] not in ['root', 'self', coverage_rel] %}
+          <tr>
+            <td><a href="{{ link['href'] }}">{{ link['title'] or link['href'] }}</a></td>
+            <td class="text-end"><span class="type-chip">{{ format_names.get(link['type'], link['type']) }}</span></td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="col-lg-4">
+    <div class="card get-data">
+      <div class="card-body">
+        <h2 class="h6 text-uppercase text-secondary mb-3">Get the data</h2>
+        <div class="d-grid gap-2 mb-3">
+          {% if is_coverage %}
+          <a class="btn btn-red" href="{{ base }}/">Pick an area on the map</a>
+          {% endif %}
+          <a class="btn btn-ghost" href="{{ href }}/schema?f=html">Schema</a>
+        </div>
+
+        {% if is_coverage %}
+        <div class="text-secondary small mb-1">Formats</div>
+        <div class="mb-3">
+          {% for link in coverage_links %}<span class="type-chip me-1">{{ 'HTML map' if link['type'] == 'text/html' else format_names.get(link['type'], link['type']) }}</span>{% endfor %}
+        </div>
+
+        {% if bbox | length == 4 %}
+        {% set cx = ((bbox[0] + bbox[2]) / 2) | round(2) %}
+        {% set cy = ((bbox[1] + bbox[3]) / 2) | round(2) %}
+        {% set example = href ~ '/coverage?bbox=' ~ (cx - 0.05) | round(2) ~ ',' ~ (cy - 0.05) | round(2) ~ ',' ~ (cx + 0.05) | round(2) ~ ',' ~ (cy + 0.05) | round(2) ~ '&f=GTiff' %}
+        <div class="d-flex justify-content-between align-items-center mb-1">
+          <span class="text-secondary small">Example request</span>
+          <button class="copy-btn" type="button" id="copy-example">Copy</button>
+        </div>
+        <code id="example" class="request-url">{{ example }}</code>
+        <p class="small text-secondary mt-2 mb-0">
+          <code>bbox</code> is <code>minLon,minLat,maxLon,maxLat</code> in degrees. Use <code>f=json</code> for CoverageJSON.
+        </p>
+        {% endif %}
+        {% endif %}
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block extrafoot %}
+<script>
+(function () {
+  {% if data.get('extent', {}).get('spatial', {}).get('bbox') %}
+  var b = {{ data['extent']['spatial']['bbox'][0] | tojson }};
+  var bounds = [[Math.max(b[1], -85), b[0]], [Math.min(b[3], 85), b[2]]];
+  var map = L.map('collection-map', { scrollWheelZoom: false });
+  L.tileLayer({{ config['server']['map']['url'] | tojson }}, {
+    maxZoom: 18, attribution: {{ config['server']['map']['attribution'] | tojson }}
+  }).addTo(map);
+  L.rectangle(bounds, { color: '#e50914', weight: 2, fillOpacity: 0.12, interactive: false }).addTo(map);
+  map.fitBounds(bounds, { padding: [30, 30] });
+  {% endif %}
+
+  // Fields from the collection schema (range type)
+  var fieldsEl = document.getElementById('fields');
+  fetch({{ (data['collections_path'] ~ '/' ~ data['id'] ~ '/schema?f=json') | tojson }})
+    .then(function (r) { return r.json(); })
+    .then(function (schema) {
+      var props = schema.properties || {};
+      var names = Object.keys(props);
+      if (!names.length) { fieldsEl.textContent = '—'; return; }
+      fieldsEl.classList.remove('text-secondary');
+      fieldsEl.innerHTML = names.map(function (n) {
+        var p = props[n], unit = p['x-ogc-unit'] ? ' (' + p['x-ogc-unit'] + ')' : '';
+        return '<code>' + n + '</code> <span class="text-secondary">' + (p.title || '') + unit + ', ' + (p.type || '') + '</span>';
+      }).join('<br>');
+    })
+    .catch(function () { fieldsEl.textContent = '—'; });
+
+  var copy = document.getElementById('copy-example');
+  if (copy) {
+    copy.addEventListener('click', function () {
+      navigator.clipboard.writeText(document.getElementById('example').textContent).then(function () {
+        copy.textContent = 'Copied';
+        setTimeout(function () { copy.textContent = 'Copy'; }, 1500);
+      });
+    });
+  }
+})();
+</script>
+{% endblock %}

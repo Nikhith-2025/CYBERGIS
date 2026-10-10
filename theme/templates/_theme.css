@@ -1,0 +1,180 @@
+/* Black and red theme for the coverage service, layered over Bootstrap 5.3 (data-bs-theme="dark") */
+:root,
+[data-bs-theme="dark"] {
+  --bg: #141414;
+  --bg-deep: #0b0b0b;
+  --surface: #1c1c1c;
+  --surface-2: #262626;
+  --border: #303030;
+  --text: #e5e5e5;
+  --muted: #a3a3a3;
+  --red: #e50914;
+  --red-hover: #f6121d;
+  --red-soft: rgba(229, 9, 20, 0.14);
+  --ok: #46d369;
+  --warn: #f5a623;
+
+  --bs-body-bg: var(--bg);
+  --bs-body-color: var(--text);
+  --bs-secondary-color: var(--muted);
+  --bs-border-color: var(--border);
+  --bs-link-color: #ffffff;
+  --bs-link-color-rgb: 255, 255, 255;
+  --bs-link-hover-color: var(--red-hover);
+  --bs-link-hover-color-rgb: 246, 18, 29;
+  --bs-focus-ring-color: rgba(229, 9, 20, 0.3);
+  --bs-tertiary-bg: var(--surface);
+  --bs-secondary-bg: var(--surface-2);
+  --bs-emphasis-color: #ffffff;
+  --bs-font-sans-serif: "Inter", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --bs-font-monospace: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+html, body { background: var(--bg); color: var(--text); }
+body { min-height: 100vh; display: flex; flex-direction: column; }
+main { flex: 1 0 auto; background: transparent; padding-bottom: 3rem; }
+h1, h2, h3, h4 { color: #fff; font-weight: 700; letter-spacing: -0.01em; }
+h2 { font-size: 1.35rem; margin-top: 1.75rem; }
+h3 { font-size: 1.1rem; margin-top: 1.5rem; }
+a { text-underline-offset: 3px; text-decoration-color: rgba(255, 255, 255, .35); }
+a:hover { text-decoration-color: var(--red); }
+code, pre { font-family: var(--bs-font-monospace); }
+code { color: #ff8a8f; }
+.form-control:focus { border-color: var(--red); box-shadow: 0 0 0 .2rem var(--red-soft); }
+
+/* --- Top bar -------------------------------------------------------------- */
+.site-header { background: var(--bg-deep); border-bottom: 1px solid #222; }
+/* pygeoapi's original logo, shown in white so it reads on black */
+.site-brand { display: inline-flex; align-items: center; padding: 4px 0; }
+.site-brand img { height: 28px; width: auto; display: block; filter: brightness(0) invert(1); }
+.site-nav .nav-link { color: var(--muted); border-radius: 6px; padding: .4rem .8rem; }
+.site-nav .nav-link:hover { color: #fff; }
+.site-nav .nav-link.contact { color: #fff; background: var(--red); margin-left: .4rem; }
+.site-nav .nav-link.contact:hover { background: var(--red-hover); }
+
+/* --- Breadcrumbs and format switch ---------------------------------------- */
+.crumbs { background: var(--bg); border-bottom: 1px solid #222; padding: .55rem 0; font-size: .875rem; color: var(--muted); }
+.crumbs a { color: var(--muted); text-decoration: none; padding: 0 .35rem; }
+.crumbs a:hover { color: #fff; }
+.crumbs .formats a {
+  border: 1px solid var(--border); border-radius: 4px;
+  padding: .1rem .5rem; margin-left: .35rem; font-family: var(--bs-font-monospace); font-size: .75rem;
+}
+.crumbs .formats a:hover { border-color: var(--red); color: #fff; }
+
+/* --- Cards, tables, badges ------------------------------------------------- */
+.card, .card.bg-light {
+  background: var(--surface) !important;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+}
+.card-header { background: var(--surface-2); border-bottom: 1px solid var(--border); }
+.table { --bs-table-bg: var(--surface); --bs-table-striped-bg: var(--surface-2); --bs-table-border-color: var(--border); }
+.badge.bg-primary, .badge.text-bg-primary {
+  background: var(--red-soft) !important; color: #ff8a8f !important;
+  border: 1px solid rgba(229, 9, 20, .35); font-weight: 500;
+}
+.bg-light { background-color: var(--surface) !important; }
+.text-dark { color: var(--text) !important; }
+ul li::marker { color: var(--red); }
+
+/* --- Buttons ---------------------------------------------------------------- */
+.btn-red { background: var(--red); border-color: var(--red); color: #fff; font-weight: 600; }
+.btn-red:hover { background: var(--red-hover); border-color: var(--red-hover); color: #fff; }
+.btn-ghost { border: 1px solid var(--border); color: var(--text); background: rgba(255, 255, 255, .03); }
+.btn-ghost:hover, .btn-ghost.active { border-color: #fff; color: #fff; }
+.btn.disabled { opacity: .4; }
+.copy-btn { font-size: .75rem; padding: .15rem .6rem; border-radius: 4px; border: 1px solid var(--border); background: transparent; color: var(--muted); }
+.copy-btn:hover:not(:disabled) { color: #fff; border-color: var(--red); }
+.copy-btn:disabled { opacity: .4; }
+
+/* --- Maps (Leaflet) -------------------------------------------------------- */
+#items-map, #collection-map { width: 100%; height: 420px; border-radius: 8px; border: 1px solid var(--border); }
+#coverages-map { width: 100%; height: 78vh; border-radius: 8px; border: 1px solid var(--border); }
+/* !important: pages load Leaflet's own CSS (background #ddd) after this theme */
+.leaflet-container { background: var(--bg-deep) !important; }
+.leaflet-bar a, .leaflet-control-layers, .leaflet-popup-content-wrapper, .leaflet-popup-tip,
+.leaflet-coverage-control.legend {
+  background: var(--surface-2) !important; color: var(--text) !important; border-color: var(--border) !important;
+}
+.leaflet-control-attribution { background: rgba(20, 20, 20, .85) !important; color: var(--muted) !important; }
+.leaflet-control-attribution a { color: #fff !important; }
+.leaflet-coverage-control.legend { border: 1px solid var(--border) !important; border-radius: 8px !important; }
+.c3-tooltip-container { z-index: 300; }
+
+/* --- Landing page: area picker -------------------------------------------- */
+.intro h1 { font-size: clamp(1.6rem, 3vw, 2.2rem); margin-bottom: .4rem; }
+.picker { overflow: hidden; }
+.picker-toolbar { display: flex; gap: .5rem; padding: .75rem; border-bottom: 1px solid var(--border); }
+.picker-toolbar .btn { white-space: nowrap; }
+.picker-toolbar .form-control { background: var(--bg-deep); border-color: var(--border); }
+#picker-map { height: 520px; }
+.picker-hint { padding: .6rem .9rem; border-top: 1px solid var(--border); color: var(--muted); font-size: .875rem; }
+.picker-hint b { color: #fff; font-weight: 600; }
+
+.area-panel .form-label { color: var(--muted); font-size: .78rem; margin-bottom: .2rem; }
+.area-panel .form-control { background: var(--bg-deep); border-color: var(--border); font-family: var(--bs-font-monospace); }
+.status { font-size: .9rem; color: var(--muted); }
+.status.ok { color: var(--ok); }
+.status.bad { color: var(--warn); }
+.request-url { display: block; background: var(--bg-deep); border: 1px solid var(--border); border-radius: 6px;
+  padding: .55rem .7rem; font-size: .75rem; color: var(--text); word-break: break-all; user-select: all; }
+
+.quick-links { display: flex; flex-wrap: wrap; gap: 1.25rem; font-size: .9rem; }
+.quick-links a { color: var(--muted); text-decoration: none; }
+.quick-links a:hover { color: #fff; }
+
+/* --- Collections page ------------------------------------------------------- */
+.page-head { display: flex; align-items: baseline; gap: .75rem; flex-wrap: wrap; margin-bottom: 1.25rem; }
+.page-head h1 { margin: 0; }
+.page-head .count { color: var(--muted); }
+.collection-card {
+  background: var(--surface); border: 1px solid var(--border); border-radius: 8px; overflow: hidden;
+  height: 100%; display: flex; flex-direction: column;
+  transition: transform .15s ease, border-color .15s ease, box-shadow .15s ease;
+}
+.collection-card:hover { transform: translateY(-3px); border-color: #4a4a4a; box-shadow: 0 10px 30px rgba(0, 0, 0, .5); }
+.collection-card .preview { height: 190px; background: var(--bg-deep); border-bottom: 1px solid var(--border); position: relative; }
+.collection-card .preview .tag {
+  position: absolute; top: 10px; left: 10px; z-index: 500;
+  background: var(--red); color: #fff; font-size: .7rem; font-weight: 700; letter-spacing: .06em;
+  text-transform: uppercase; padding: .2rem .5rem; border-radius: 3px;
+}
+.collection-card .body { padding: 1.1rem 1.2rem 1.2rem; display: flex; flex-direction: column; flex: 1; }
+.collection-card h2 { font-size: 1.2rem; margin: 0 0 .4rem; }
+.collection-card h2 a { color: #fff; text-decoration: none; }
+.collection-card h2 a:hover { color: var(--red-hover); }
+.collection-card .desc { color: var(--muted); font-size: .9rem; margin-bottom: .8rem; }
+.collection-card .facts { display: grid; grid-template-columns: auto 1fr; gap: .25rem .9rem; font-size: .82rem; margin-bottom: 1rem; }
+.collection-card .facts dt { color: var(--muted); font-weight: 400; }
+.collection-card .facts dd { margin: 0; color: var(--text); font-family: var(--bs-font-monospace); font-size: .78rem; }
+.collection-card .actions { margin-top: auto; display: flex; gap: .5rem; flex-wrap: wrap; }
+
+/* --- Footer --------------------------------------------------------------- */
+.site-footer { border-top: 1px solid #222; background: var(--bg-deep); color: var(--muted); font-size: .85rem; }
+.site-footer a { color: var(--muted); }
+.site-footer a:hover { color: #fff; }
+.site-footer img { filter: brightness(0) invert(.7); }
+
+/* --- Conformance page ------------------------------------------------------ */
+.conformance-table td { vertical-align: top; padding: .65rem 1rem; }
+.conformance-table td.slug { width: 14rem; white-space: nowrap; }
+.conformance-table .uri { color: var(--muted); font-family: var(--bs-font-monospace); font-size: .75rem; margin-top: .25rem; word-break: break-all; user-select: all; }
+
+/* --- Collection details page ------------------------------------------------- */
+.collection-head .tag, .collection-card .preview .tag {
+  display: inline-block; background: var(--red); color: #fff; font-size: .7rem; font-weight: 700;
+  letter-spacing: .06em; text-transform: uppercase; padding: .2rem .5rem; border-radius: 3px;
+}
+.collection-head h1 { margin: .6rem 0 .5rem; }
+.collection-head .lead-desc { color: var(--muted); max-width: 60rem; margin-bottom: .8rem; }
+#collection-map { height: 420px; border: 0; border-radius: 0; }
+.section-h { font-size: 1.05rem; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); margin: 2rem 0 .8rem; }
+.detail-grid { display: grid; grid-template-columns: 9rem 1fr; gap: .55rem 1rem; }
+.detail-grid dt { color: var(--muted); font-weight: 400; }
+.detail-grid dd { margin: 0; }
+.links-table td { padding: .6rem 1rem; vertical-align: middle; }
+.type-chip { display: inline-block; font-family: var(--bs-font-monospace); font-size: .72rem; color: var(--muted);
+  border: 1px solid var(--border); border-radius: 4px; padding: .05rem .45rem; white-space: nowrap; }
+.get-data { position: sticky; top: 80px; }
