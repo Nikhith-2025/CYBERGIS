@@ -13,6 +13,8 @@ import os
 import subprocess
 from contextlib import ExitStack
 
+import rasterio
+
 from cartodem_service import bhoonidhi
 from cartodem_service.bhoonidhi import DATA_DIR, LOCK_DIR, file_lock
 
@@ -24,7 +26,7 @@ ABSENT_FILE = CACHE_DIR / 'absent.json'
 EXTENT = (68, 6, 98, 38)
 RES = 1 / 3600
 NODATA = -32768
-EXPECTED_EPSG = '4326'
+EXPECTED_EPSG = 4326
 # Most uncached tiles one request may trigger downloading
 MAX_FETCH = 4
 # Tolerance for float noise when snapping bounds to the grid
@@ -66,12 +68,12 @@ def run(cmd):
 
 def check_tile(src):
     """Confirm the raw tile is a single-band EPSG:4326 raster."""
-    info = json.loads(run(['gdalinfo', '-json', str(src)]))
-    epsg = info.get('stac', {}).get('proj:epsg')
-    if str(epsg) != EXPECTED_EPSG:
-        raise ValueError(f'{src.name}: expected EPSG:{EXPECTED_EPSG}, got {epsg}')
-    if len(info['bands']) != 1:
-        raise ValueError(f"{src.name}: expected 1 band, got {len(info['bands'])}")
+    with rasterio.open(src) as ds:
+        epsg = ds.crs.to_epsg() if ds.crs else None
+        if epsg != EXPECTED_EPSG:
+            raise ValueError(f'{src.name}: expected EPSG:{EXPECTED_EPSG}, got {epsg}')
+        if ds.count != 1:
+            raise ValueError(f'{src.name}: expected 1 band, got {ds.count}')
 
 
 def prepare_tile(src):

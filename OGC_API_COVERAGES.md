@@ -491,9 +491,10 @@ already safe across processes (file locks; see [7.3](#73-concurrency-and-safety)
 
 ```bash
 scripts/serve.sh                                                   # gunicorn
-k6 run -e SCENARIO=mixed loadtest/coverage.js                      # also: geotiff, covjson
+k6 run -e SCENARIO=mixed loadtest/coverage.js                      # also: geotiff, covjson, hot
 k6 run -e SCENARIO=mixed --summary-export result.json loadtest/coverage.js
 DEV=1 scripts/serve.sh                                             # Flask dev server, for the baseline
+k6 run -e BASE=http://localhost:8080 -e SCENARIO=hot loadtest/coverage.js   # via the Docker stack
 ```
 
 ---
@@ -514,6 +515,7 @@ DEV=1 scripts/serve.sh                                             # Flask dev s
 | Error handling | **Middleware** in `app.py` | Fixes two pygeoapi API-level gaps without patching pygeoapi |
 | Web pages | **Custom dark theme** in `theme/templates/` | pygeoapi falls back to its own templates for anything not overridden, so only the base layout, landing page (an area picker) and conformance page are replaced. Coverage maps use a terrain colour scale and a keyless dark basemap (Esri World Dark Gray). The conformance page shows class URIs as text: OGC hasn't published pages for the Coverages and Common Part 2 URIs, so linking them gives 404s. |
 | Entry point | **`cartodem_service.app:APP`**, debug off | `pygeoapi serve` runs Flask with `debug=True`, which exposes the Werkzeug debugger. A WSGI app object is also what gunicorn loads. |
+| Deployment | **Docker Compose: nginx + 2 replicas** on one VM | Replicas give resilience (if one crashes, nginx sends its traffic to the other); nginx adds caching, rate limiting and gzip without changing the service. A VM rather than a managed platform because the Bhoonidhi session needs a fixed outbound IP and the tile cache needs a persistent disk. |
 | Server | **gunicorn, 8 processes × 4 threads** (`gthread`), 120 s timeout | Python handles one request at a time per process; eight processes gave 3–7× the throughput (see [Performance](#8-performance)). Threads let a request waiting on Bhoonidhi hold one thread instead of a whole worker. |
 
 ---
@@ -576,6 +578,46 @@ DEV=1 scripts/serve.sh      # Flask's single-process development server instead
 .venv/bin/python tests/compliance_test.py
 ```
 
+### 10.7 Deploy with Docker
+
+`docker-compose.yml` runs **nginx** (port 80) in front of **two identical service replicas** that share `./data`
+(tile cache, mosaic, Bhoonidhi session):
+
+```
+Internet ──▶ nginx :80 ──┬─▶ app1 (gunicorn) ─┐
+  cache · rate limit     └─▶ app2 (gunicorn) ─┴─▶ ./data (tiles, mosaic, session)
+  gzip · failover                     │ new tiles only
+                                      ▼
+                                  Bhoonidhi
+```
+
+| Feature | Setting (`deploy/nginx.conf`) |
+|---|---|
+| Load balancing and failover | A replica that fails twice is skipped for 10 s; connections time out after 2 s |
+| Response cache | Successful responses cached 24 h, keyed on URL and `Accept`; `X-Cache-Status` header shows HIT/MISS |
+| Rate limit | 20 requests/s per client IP, bursts of 40, then **429**; the server itself and the Docker network are exempt |
+| gzip | JSON, CoverageJSON, CSS and JavaScript |
+| Timeouts | 120 s read timeout for first requests that fetch a tile |
+| Health and restarts | Each replica is health-checked every 15 s and restarted if it exits |
+
+**On a server** (Ubuntu with Docker; the Bhoonidhi session is tied to the server's public IP, so it must be fixed):
+
+```bash
+# Copy the project to the server: git clone if the repository is public, otherwise from your machine:
+#   rsync -a --exclude .venv --exclude data --exclude .env ./ user@server:CYBERGIS/
+cd CYBERGIS
+cp .env.example .env && nano .env            # Bhoonidhi user ID and password
+mkdir -p data                                # optionally copy an existing tile cache into data/
+export PYGEOAPI_SERVER_URL=http://<public-address>
+docker compose up -d --build
+
+# Bhoonidhi login, on the server (OTP is emailed; repeat about every 6 hours)
+docker compose run --rm app1 python scripts/download_cartodem.py login
+docker compose run --rm app1 python scripts/download_cartodem.py login --otp 123456
+```
+
+Locally the same stack runs with `HTTP_PORT=8080 PYGEOAPI_SERVER_URL=http://localhost:8080 docker compose up -d`.
+
 ---
 
 ## 11. Project layout
@@ -598,6 +640,10 @@ DEV=1 scripts/serve.sh      # Flask's single-process development server instead
 │   ├── coverage.js         k6 load test (geotiff, covjson, mixed scenarios)
 │   └── results/            k6 summaries: Flask dev server and gunicorn runs, cold-fetch test
 ├── gunicorn.conf.py        Production server settings
+├── Dockerfile              Service image (Python, GDAL tools, gunicorn)
+├── docker-compose.yml      nginx + two replicas sharing ./data
+├── deploy/
+│   └── nginx.conf          Load balancing, cache, rate limit, gzip
 ├── theme/templates/        Dark web theme: base layout, area-picker landing page, conformance page, CSS
 ├── pygeoapi-config.yml     Service and collection configuration
 ├── requirements.txt
@@ -623,8 +669,10 @@ DEV=1 scripts/serve.sh      # Flask's single-process development server instead
 - **No scaling or reprojection of the output.** Coverages are returned at the native 1 arc-second grid in EPSG:4326
   (`bbox-crs` reprojects only the request box).
 - **Tiles not marked `Online = Y`** in Bhoonidhi can't be fetched. They have to be ordered in the portal first (503).
-- **One machine.** gunicorn uses one machine's cores, and the cache and locks are local files. Scaling past one
-  machine needs shared storage for the tiles; see future work.
+- **One machine.** The replicas share one server's disk, cache and file locks. Scaling past one machine needs
+  shared storage for the tiles and locks; see future work.
+- **The nginx cache isn't cleared automatically.** Responses are kept 24 h; after changing tiles by hand, clear it with
+  `docker compose exec nginx sh -c 'rm -rf /var/cache/nginx/coverage/*'`.
 - **Cache growth.** About 40 MB per tile, and nothing evicts tiles. All of India would be several hundred tiles.
 - **The web pages load assets from third parties:** Bootstrap (jsDelivr), fonts (Google Fonts), map libraries
   (unpkg), basemap tiles (Esri) and place search (Nominatim). The API itself doesn't depend on them.
@@ -650,8 +698,10 @@ Found while building this, against the [Bhoonidhi API specification](https://bho
 
 ## 14. Future work
 
-- **Resilience (phase 3):** nginx in front for response caching and rate limiting, Docker images with several replicas,
-  COGs in object storage (S3, R2 or GCS) read over HTTP, and asynchronous prefetch so first requests don't block.
+- **More than one server:** COGs in object storage (S3, R2 or GCS) read over HTTP, so several servers can share one
+  tile cache, behind a cloud load balancer.
+- **Background tile fetching:** answer a request for a new area with "fetching, retry shortly" and download in the
+  background, so no request waits on Bhoonidhi.
 - **Session renewal:** the portal appears to support renewing a session while it is still fresh. That could stretch one
   OTP over a longer period.
 - **More of the standard:** the `scaling` and `crs` conformance classes (downsampled overviews and reprojected output).

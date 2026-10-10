@@ -1,0 +1,11 @@
+.git
+.venv
+.idea
+.env
+data
+loadtest
+__pycache__
+*.pyc
+*.pdf
+*.png
+pygeoapi-openapi.yml

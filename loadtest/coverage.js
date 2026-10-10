@@ -3,8 +3,9 @@
 //   k6 run -e SCENARIO=geotiff loadtest/coverage.js
 //   k6 run -e SCENARIO=covjson -e BASE=http://localhost:5000 loadtest/coverage.js
 //
-// SCENARIO: geotiff (city-sized GeoTIFFs), covjson (small CoverageJSON) or
-// mixed (70% GeoTIFF, 15% CoverageJSON, 15% HTML/JSON pages).
+// SCENARIO: geotiff (city-sized GeoTIFFs), covjson (small CoverageJSON),
+// mixed (70% GeoTIFF, 15% CoverageJSON, 15% HTML/JSON pages) or
+// hot (everyone requests the same 30 popular boxes; shows nginx's cache).
 // Every request uses a random box inside a tile that is already cached, so the
 // test measures this service, not Bhoonidhi.
 import http from 'k6/http';
@@ -65,6 +66,20 @@ function covjson() {
   covjsonTime.add(res.timings.duration);
 }
 
+// 30 fixed "popular" boxes, the same for every user and run
+const HOT = Array.from({ length: 30 }, (_, i) => {
+  const [lat, lon] = TILES[i % TILES.length];
+  const w = lon + 0.1 + (i % 7) * 0.1;
+  const s = lat + 0.1 + (i % 5) * 0.1;
+  return [w, s, w + 0.1, s + 0.1].map((v) => v.toFixed(4)).join(',');
+});
+
+function hot() {
+  const res = http.get(`${COVERAGE}?bbox=${HOT[Math.floor(Math.random() * HOT.length)]}&f=GTiff`, { tags: { kind: 'geotiff' } });
+  check(res, { 'hot 200': (r) => r.status === 200 });
+  geotiffTime.add(res.timings.duration);
+}
+
 const PAGES = ['/?f=html', '/collections?f=html', '/collections/cartodem?f=json', '/conformance?f=json'];
 
 function page() {
@@ -76,6 +91,7 @@ function page() {
 export default function () {
   if (SCENARIO === 'geotiff') { geotiff(); return; }
   if (SCENARIO === 'covjson') { covjson(); return; }
+  if (SCENARIO === 'hot') { hot(); return; }
   const r = Math.random();
   if (r < 0.70) { geotiff(); } else if (r < 0.85) { covjson(); } else { page(); }
 }

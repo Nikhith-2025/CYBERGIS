@@ -1,0 +1,48 @@
+# Coverage service: nginx in front of two identical replicas sharing one data folder.
+#
+#   PYGEOAPI_SERVER_URL=http://<public-address> docker compose up -d --build
+#
+# Bhoonidhi credentials come from .env (never committed). data/ holds the tile
+# cache, the mosaic and the Bhoonidhi session, shared by both replicas.
+
+x-app: &app
+  build: .
+  image: coverage-service
+  restart: unless-stopped
+  # Run as the host user so files written to ./data stay owned by them
+  user: "${UID:-1000}:${GID:-1000}"
+  environment:
+    PYGEOAPI_SERVER_URL: ${PYGEOAPI_SERVER_URL:-http://localhost}
+    # Per replica; the VM has 2 CPUs
+    WORKERS: ${WORKERS:-2}
+    THREADS: ${THREADS:-4}
+  volumes:
+    - ./data:/app/data
+    - ./.env:/app/.env:ro
+  healthcheck:
+    test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5000/conformance?f=json', timeout=5)"]
+    interval: 15s
+    timeout: 6s
+    retries: 3
+    start_period: 30s
+
+services:
+  app1: *app
+  app2: *app
+
+  nginx:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    ports:
+      - "${HTTP_PORT:-80}:80"
+    volumes:
+      - ./deploy/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - nginx-cache:/var/cache/nginx
+    depends_on:
+      app1:
+        condition: service_healthy
+      app2:
+        condition: service_healthy
+
+volumes:
+  nginx-cache:
