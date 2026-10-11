@@ -146,10 +146,13 @@ Files are written to temporary names and renamed into place, so nothing half-wri
 | Purpose | Route | Authentication |
 |---|---|---|
 | Catalogue search | Documented API `POST /data/search` | Password login; tokens are **cached and refreshed** (access 20 min, refresh 5 h), so a search doesn't use one of the 20 logins per hour |
-| Tile download | Portal `GET /bhoonidhi/data/CARTODEM/P5/PAN/30m/<id>.zip?token=…&product_id=<id>` | Portal login with a **6-digit OTP emailed to the account holder**; the session lasts 6 hours and is tied to the server's IP |
+| Tile download | Portal `GET /bhoonidhi/data/CARTODEM/P5/PAN/30m/<id>.zip?token=…&product_id=<id>` | Portal login with a **6-digit OTP emailed to the account holder**, once; the session lasts 6 hours and is tied to the server's IP, so the service **renews it every hour** without an OTP |
 
 - **Within Bhoonidhi's limits:** searches are spaced at least 0.5 s apart across all processes (Bhoonidhi allows 3 per
   second), and a request can fetch at most 4 new tiles (Bhoonidhi allows 5 concurrent downloads).
+- **Session renewal:** each gunicorn worker runs a background thread that checks every 5 minutes and renews the
+  portal session once it is an hour old (`VALIDATE_SESSION`). A shared lock and timestamp mean only one process
+  renews. A session the portal refuses to renew is marked expired, and new tiles return 503 until the next login.
 - **Retries:** an empty reply (seen under load) is retried once, then reported as 503.
 - **Secrets:** credentials come from `.env`; tokens and the session are kept in `data/` with owner-only permissions.
   Neither is ever committed.
@@ -260,7 +263,7 @@ with MemoryFile(resp.content) as mem, mem.open() as src:
 | `404` | Unknown collection |
 | `413` | Too large: over the area limit, or more than 4 new tiles needed |
 | `429` | Too many requests from one IP (over 20 per second) |
-| `503` | A new tile can't be fetched right now (Bhoonidhi unavailable, or the operator's OTP session has expired) |
+| `503` | A new tile can't be fetched right now (Bhoonidhi unavailable, or the operator's session has expired) |
 
 Errors are OGC exception documents with a `description` explaining the problem.
 
@@ -359,9 +362,9 @@ cp .env.example .env && nano .env                 # Bhoonidhi user ID and passwo
 echo "PYGEOAPI_SERVER_URL=http://<address>" >> .env
 docker compose up -d --build
 
-# Bhoonidhi login, on the server (an OTP is emailed; repeat when the 6-hour session expires)
+# Bhoonidhi login, on the server, once: an OTP is emailed and asked for.
+# The running service renews the session from then on.
 docker compose run --rm app1 python scripts/download_cartodem.py login
-docker compose run --rm app1 python scripts/download_cartodem.py login --otp 123456
 ```
 
 **Adding HTTPS** (needs a domain name; on Azure, a free DNS name label on the public IP gives
@@ -389,8 +392,7 @@ Requirements: Linux or macOS, Python 3.10+, GDAL command-line tools 3.1+ (with t
 python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 cp .env.example .env                                          # Bhoonidhi user ID and password
 
-.venv/bin/python scripts/download_cartodem.py login           # OTP is emailed
-.venv/bin/python scripts/download_cartodem.py login --otp 123456
+.venv/bin/python scripts/download_cartodem.py login           # once: OTP is emailed and asked for
 .venv/bin/python scripts/download_cartodem.py fetch           # optional: pre-fetch Hyderabad
 
 scripts/serve.sh                                              # http://localhost:5000 (DEV=1 for Flask's dev server)
@@ -410,9 +412,9 @@ cartodem_service/
   app.py              WSGI app: pygeoapi + middleware (bbox validation, Accept: image/tiff)
   provider.py         CartoDEMProvider: pixel windows, size limits, CoverageJSON, tile fetching
   tiles.py            Tile cache: which tiles, locks, conversion, mosaic
-  bhoonidhi.py        Bhoonidhi client: catalogue search, OTP login, tile download
+  bhoonidhi.py        Bhoonidhi client: catalogue search, OTP login, session renewal, tile download
 scripts/
-  download_cartodem.py  OTP login and pre-fetching
+  download_cartodem.py  OTP login, session renewal and pre-fetching
   prepare_tiles.py      Prepare tiles added by hand
   patch_openapi.py      Correct the coverage endpoint's OpenAPI description
   serve.sh              Start the service locally
@@ -439,7 +441,7 @@ data/                   (not committed) tiles, mosaic, session
 | **pygeoapi** with a **custom provider** | pygeoapi implements the standard; the custom provider fixes its raster clipping and is where tile fetching plugs in |
 | **Fetch tiles on demand, then cache** | Keeps Bhoonidhi as the source without depending on it for every request; proxying each request would exceed Bhoonidhi's login and download limits at once |
 | **Synchronous fetching** | Standard clients expect data in the response; the cost is a slow first request per new tile |
-| **Portal download with OTP** | The documented `/download` endpoint rejects every token |
+| **Portal download with OTP, then renewal** | The documented `/download` endpoint rejects every token; renewing the portal session keeps the one OTP login working |
 | **Cloud-Optimized GeoTIFFs + a VRT mosaic** | A small request reads only a few blocks; adding a tile rewrites a few KB, not a whole mosaic |
 | **gunicorn with threads** | Several processes for throughput; threads so a request waiting on Bhoonidhi holds one thread, not a whole process |
 | **nginx + two replicas on one VM** | Caching, rate limiting, HTTPS and failover without changing the service; a VM for a fixed IP and persistent disk |
@@ -448,8 +450,9 @@ data/                   (not committed) tiles, mosaic, session
 
 ## 11. Known limitations
 
-- **New tiles need a person every 6 hours.** Bhoonidhi requires an emailed OTP. When the session expires, cached
-  areas still work, but new areas return 503 until the operator logs in again.
+- **New tiles need one OTP login per outage.** The service renews the session while it runs, but if it is down for
+  more than 6 hours the session expires. Cached areas still work; new areas return 503 until the operator logs in
+  again.
 - **The session is tied to the server's IP.** It must be created on the machine that runs the service.
 - **The download route isn't in Bhoonidhi's API specification.** It is the portal's own route and could change.
 - **First requests for new tiles are slow** (about 10–13 s, longer when Bhoonidhi is busy).
@@ -472,6 +475,7 @@ data/                   (not committed) tiles, mosaic, session
 |---|---|
 | `/download` rejects every token | Always `401 "Invalid session detected! Please login."` (the specification's wording is "…Please login **again**", so an undocumented check is failing). Tried: fresh and refreshed tokens, without `Bearer`, as a query parameter, POST instead of GET, with the portal logged out, and with an OTP-verified portal token |
 | Portal downloads need an OTP | `LoginServlet`: password → OTP emailed → session token valid for 6 hours, tied to the client's IP |
+| Portal sessions can be renewed | `LoginServlet` with `{"action": "VALIDATE_SESSION"}` and the token in a `token` header returns a new session token, no OTP. An expired token gets HTTP 200 with an empty `JWT` |
 | An empty search returns 404 | `404 "NO RESULTS FOUND"` instead of STAC's `200` with no features |
 | Search can return an empty reply under load | HTTP 200 with an empty body when several searches arrive together |
 | The catalogue needs a login | Even `GET /data/collections/{id}` returns 401 |
@@ -485,7 +489,6 @@ data/                   (not committed) tiles, mosaic, session
 - **Background fetching:** answer a request for a new area with "retry shortly" and download in the background, so no
   request waits on Bhoonidhi.
 - **More than one server:** tiles in object storage (S3, R2 or GCS), shared by several servers.
-- **Longer sessions:** the portal appears to support renewing a session while it is still valid.
 - **More of the standard:** the `scaling` and `crs` conformance classes.
 - **More data:** CartoDEM at 10 m and 2.5 m (referenced in the portal's code) and other Bhoonidhi raster collections.
 

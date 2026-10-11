@@ -7,11 +7,15 @@ of the 20 logins per hour on every search.
 Download uses the portal's login (password + email OTP), because the
 documented /download endpoint rejects API tokens with 401 "Invalid session
 detected". The OTP has to be entered by a person, so the portal session is
-created with scripts/download_cartodem.py and only reused here.
+created once with scripts/download_cartodem.py. After that the service renews
+it every hour (VALIDATE_SESSION), long before its 6 hours run out, so no
+further OTP is needed while the service keeps running.
 """
 import fcntl
 import json
+import logging
 import os
+import threading
 import time
 import zipfile
 from contextlib import contextmanager
@@ -31,14 +35,19 @@ RAW_DIR = DATA_DIR / 'raw'
 LOCK_DIR = DATA_DIR / '.locks'
 # Files holding live tokens: owner-only permissions, never committed (data/ is git-ignored)
 API_TOKENS_FILE = DATA_DIR / '.api_tokens.json'
-PENDING_FILE = DATA_DIR / '.portal_pending.json'
 SESSION_FILE = DATA_DIR / '.portal_session.json'
+
+LOGGER = logging.getLogger(__name__)
 
 # Renew the access token this many seconds before it expires
 TOKEN_MARGIN = 60
 # Bhoonidhi allows 3 searches per second per IP; keep well under it
 SEARCH_INTERVAL = 0.5
 SEARCH_STAMP_FILE = LOCK_DIR / 'last_search'
+# The portal session lasts 6 hours; renew it well before that
+RENEW_INTERVAL = 3600
+# How often each process checks whether the session is due for renewal
+RENEW_CHECK = 300
 
 PORTAL_HEADERS = {
     'Accept': 'application/json, text/javascript, */*; q=0.01',
@@ -190,57 +199,116 @@ def _throttled_search(body, token):
             SEARCH_STAMP_FILE.write_text(str(time.time()))
 
 
-# --- Portal: OTP login and download ------------------------------------------
+# --- Portal: OTP login, session renewal and download --------------------------
 
-def _portal_action(payload, encode=False):
+def _portal_action(payload, encode=False, token=None):
+    """POST one action to the portal's LoginServlet and return its first result."""
     if encode:
         # Matches the portal's encodeObject(): every value is URI-encoded
         payload = {k: quote(str(v), safe='') for k, v in payload.items()}
-    resp = requests.post(f'{PORTAL}/LoginServlet', data=json.dumps(payload),
-                         headers=PORTAL_HEADERS, timeout=30)
+    headers = {**PORTAL_HEADERS, 'token': token} if token else PORTAL_HEADERS
+    try:
+        resp = requests.post(f'{PORTAL}/LoginServlet', data=json.dumps(payload),
+                             headers=headers, timeout=30)
+    except requests.RequestException as err:
+        raise BhoonidhiError(f'Bhoonidhi portal unreachable: {err}') from err
     if resp.status_code == 417:
         raise BhoonidhiError(f'OTP rejected: {resp.text.strip()}')
     if resp.status_code != 200:
-        raise BhoonidhiError(f'Portal login failed: HTTP {resp.status_code}')
+        raise BhoonidhiError(f'Bhoonidhi portal: HTTP {resp.status_code}')
     try:
         results = resp.json().get('Results') or []
     except ValueError:
-        raise BhoonidhiError('Portal login failed: invalid response') from None
+        raise BhoonidhiError('Bhoonidhi portal: invalid response') from None
     if not results:
-        raise BhoonidhiError('Portal login failed: empty response')
+        raise BhoonidhiError('Bhoonidhi portal: empty response')
     return results[0]
 
 
-def _save_session(result):
+def _session_jwt(result):
+    """The session token in a portal result, or None (the portal sends '' or 'EXCEPTION')."""
     jwt = result.get('JWT')
-    if not jwt or jwt == 'EXCEPTION':
-        raise BhoonidhiError(f"Portal login failed: {result.get('MSG') or 'no session token'}")
-    write_private(SESSION_FILE, {'jwt': jwt})
-    PENDING_FILE.unlink(missing_ok=True)
+    return jwt if jwt and jwt != 'EXCEPTION' else None
+
+
+def _save_session(jwt):
+    write_private(SESSION_FILE, {'jwt': jwt, 'renewed_at': time.time()})
 
 
 def portal_login_start():
-    """Submit the password. Returns the portal's message; an OTP is usually mailed."""
+    """Submit the password. Returns the token to verify the mailed OTP against,
+    or None if the portal logged in without an OTP."""
     user, password = credentials()
     result = _portal_action({'userId': user, 'password': password,
                              'action': 'VALIDATE_LOGIN', 'oldDB': 'false'})
-    msg = str(result.get('MSG') or '')
-    if msg.startswith('Login OTP has been mailed'):
-        write_private(PENDING_FILE, {'pending_token': result.get('pending_token')})
-        return msg
-    _save_session(result)
-    return 'Logged in without OTP'
+    jwt = _session_jwt(result)
+    if jwt:
+        _save_session(jwt)
+        return None
+    if not result.get('pending_token'):
+        raise BhoonidhiError(f"Portal login failed: {result.get('MSG') or 'no session token'}")
+    return result['pending_token']
 
 
-def portal_login_verify(otp):
-    pending = read_json(PENDING_FILE)
-    if not pending:
-        raise BhoonidhiError('No OTP pending. Start the login first.')
+def portal_login_verify(pending_token, otp):
+    """Submit the mailed OTP. Raises BhoonidhiError if the portal rejects it."""
     otp = otp.strip()
     if not (otp.isdigit() and len(otp) == 6):
         raise BhoonidhiError('OTP must be exactly 6 digits.')
-    _save_session(_portal_action({'selProds': pending['pending_token'], 'otp': otp,
-                                  'action': 'VERIFY_OTP'}, encode=True))
+    result = _portal_action({'selProds': pending_token, 'otp': otp,
+                             'action': 'VERIFY_OTP'}, encode=True)
+    jwt = _session_jwt(result)
+    if not jwt:
+        raise BhoonidhiError(f"OTP rejected: {result.get('MSG') or 'no session token'}")
+    _save_session(jwt)
+
+
+def portal_renew(force=False):
+    """Swap the portal session for a fresh one, without an OTP.
+
+    Only does anything when the session is due (RENEW_INTERVAL) or force is
+    set. A session the portal no longer renews is marked expired, so nothing
+    retries it until someone logs in again.
+    """
+    with file_lock(LOCK_DIR / 'portal_session'):
+        session = read_json(SESSION_FILE)
+        if not session or session.get('expired'):
+            raise SessionExpired('No Bhoonidhi portal session')
+        if not force and time.time() < session.get('renewed_at', 0) + RENEW_INTERVAL:
+            return False
+
+        jwt = _session_jwt(_portal_action({'action': 'VALIDATE_SESSION'}, token=session['jwt']))
+        if not jwt:
+            # An expired session still gets HTTP 200, just with an empty JWT
+            write_private(SESSION_FILE, {**session, 'expired': True})
+            raise SessionExpired('Bhoonidhi portal session expired')
+        _save_session(jwt)
+        return True
+
+
+def keep_session_alive():
+    """Start a background thread that renews the portal session when it's due.
+
+    Every process runs one; the lock and timestamp in portal_renew mean only
+    one of them actually renews each hour.
+    """
+    def loop():
+        expired_logged = False
+        while True:
+            try:
+                if portal_renew():
+                    LOGGER.warning('Bhoonidhi portal session renewed')
+                expired_logged = False
+            except SessionExpired as err:
+                if not expired_logged:
+                    LOGGER.error(f'{err}; log in again with an OTP: '
+                                 'python3 scripts/download_cartodem.py login')
+                    expired_logged = True
+            except BhoonidhiError as err:
+                LOGGER.warning(f'{err}; retrying in {RENEW_CHECK} s')
+            time.sleep(RENEW_CHECK)
+
+    threading.Thread(target=loop, name='bhoonidhi-session', daemon=True).start()
 
 
 def download_tile(item):
@@ -256,6 +324,8 @@ def download_tile(item):
     session = read_json(SESSION_FILE)
     if not session:
         raise SessionExpired('No Bhoonidhi portal session')
+    if session.get('expired'):
+        raise SessionExpired('Bhoonidhi portal session expired')
 
     url = f'{PORTAL}/data/CARTODEM/P5/PAN/30m/{item}.zip'
     try:

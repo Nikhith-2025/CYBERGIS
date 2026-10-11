@@ -1,6 +1,7 @@
 """CartoDEM tile cache: fetch missing tiles from Bhoonidhi on demand.
 
-data/raw/<item>/<tile>.tif  ->  data/cache/<tile>.tif  (Cloud-Optimized GeoTIFF)
+data/raw/<item>/<tile>.tif  ->  data/cache/<tile>.tif  (Cloud-Optimized GeoTIFF;
+                                                     the raw download is then deleted)
 data/cache/*.tif            ->  data/cartodem.vrt      (mosaic on a fixed India grid)
 
 The mosaic always spans the full CartoDEM extent, so the service can accept
@@ -10,6 +11,7 @@ until ensure_tiles() fetches them.
 import json
 import math
 import os
+import shutil
 import subprocess
 from contextlib import ExitStack
 
@@ -136,7 +138,8 @@ def _mark_absent(items):
 
 
 def fetch_tile(item, online):
-    """Download and prepare one tile. Caller must hold the tile's lock."""
+    """Download and prepare one tile, keeping only the prepared COG.
+    Caller must hold the tile's lock."""
     if online != 'Y':
         raise TileFetchError(f'{item} is not online at Bhoonidhi; it must be ordered '
                              'through the portal first')
@@ -145,6 +148,7 @@ def fetch_tile(item, online):
     if src is None:
         raise TileFetchError(f'{item}: download contained no DEM GeoTIFF')
     prepare_tile(src)
+    shutil.rmtree(folder)
 
 
 def _missing(items):

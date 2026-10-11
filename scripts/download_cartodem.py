@@ -2,12 +2,13 @@
 
 The service fetches missing tiles on demand; this script is for logging in
 (the portal needs an email OTP from a person) and for warming the cache.
+Log in once: the running service renews the session every hour after that.
 
 Credentials are read from .env (BHOONIDHI_USER_ID, BHOONIDHI_PASSWORD).
 
 Usage:
-    python3 scripts/download_cartodem.py login             # mails you an OTP
-    python3 scripts/download_cartodem.py login --otp 123456
+    python3 scripts/download_cartodem.py login             # mails an OTP and asks for it
+    python3 scripts/download_cartodem.py renew             # renew the session now
     python3 scripts/download_cartodem.py fetch [--bbox minx,miny,maxx,maxy]
 """
 import argparse
@@ -22,24 +23,40 @@ from cartodem_service import bhoonidhi, tiles  # noqa: E402
 DEFAULT_BBOX = '78.2,17.2,79.3,17.6'
 
 
+def ask_otp(pending):
+    """Prompt until the portal accepts an OTP; the portal limits the attempts."""
+    print('An OTP has been mailed to your registered email.')
+    while True:
+        otp = input('OTP (empty to stop): ').strip()
+        if not otp:
+            sys.exit('No OTP entered; not logged in.')
+        try:
+            bhoonidhi.portal_login_verify(pending, otp)
+            return
+        except bhoonidhi.BhoonidhiError as err:
+            print(err)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest='command', required=True)
-    login_cmd = sub.add_parser('login', help='log in to the portal (mails an OTP)')
-    login_cmd.add_argument('--otp', help='the 6-digit OTP from your email')
+    sub.add_parser('login', help='log in to the portal (mails an OTP and asks for it)')
+    sub.add_parser('renew', help='renew the portal session now (no OTP)')
     fetch_cmd = sub.add_parser('fetch', help='download and prepare tiles for an area')
     fetch_cmd.add_argument('--bbox', default=DEFAULT_BBOX,
                            help=f'minx,miny,maxx,maxy in degrees (default {DEFAULT_BBOX})')
     args = parser.parse_args()
 
     try:
-        if args.command == 'login' and args.otp:
-            bhoonidhi.portal_login_verify(args.otp)
-            print('Logged in. Portal session saved.')
-        elif args.command == 'login':
-            print(bhoonidhi.portal_login_start())
-            print('Now run: python3 scripts/download_cartodem.py login --otp <6-digit code>')
+        if args.command == 'login':
+            pending = bhoonidhi.portal_login_start()
+            if pending:
+                ask_otp(pending)
+            print('Logged in. The service renews the session from now on.')
+        elif args.command == 'renew':
+            bhoonidhi.portal_renew(force=True)
+            print('Portal session renewed.')
         else:
             bounds = [float(v) for v in args.bbox.split(',')]
             print(f'Tiles for {bounds}: {tiles.tiles_for_bounds(*bounds)}')

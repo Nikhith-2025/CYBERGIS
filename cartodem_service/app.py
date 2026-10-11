@@ -1,5 +1,8 @@
 """WSGI entry point: pygeoapi's Flask app plus a small request-fixing middleware.
 
+It also starts the thread that keeps the Bhoonidhi portal session alive, so
+new tiles can be downloaded without another OTP login.
+
 The middleware covers two gaps in pygeoapi 0.24's coverage handling:
 - a malformed `bbox` is reported as 500; we answer 400 InvalidParameterValue
 - `Accept: image/tiff` is ignored; we map it to `f=GTiff` when no `f` is given
@@ -13,6 +16,8 @@ from urllib.parse import parse_qsl, urlencode
 
 from pygeoapi.api import validate_bbox
 from pygeoapi.flask_app import APP, CONFIG
+
+from cartodem_service import bhoonidhi
 
 
 def _exception(start_response, description):
@@ -51,6 +56,7 @@ class CoverageRequestMiddleware:
 
 
 APP.wsgi_app = CoverageRequestMiddleware(APP.wsgi_app)
+bhoonidhi.keep_session_alive()
 
 
 if __name__ == '__main__':
