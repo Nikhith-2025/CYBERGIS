@@ -1,6 +1,19 @@
 # CYBERGIS
 
-This repo has the implementation of **OGC API - Coverages** using [pygeoapi](https://pygeoapi.io/).
+This repo has the implementation of **OGC API - Coverages** using [pygeoapi](https://pygeoapi.io/), serving
+ISRO/NRSC's **CartoDEM 30 m** elevation data from [Bhoonidhi](https://bhoonidhi.nrsc.gov.in).
+
+#### Live website: **[cybergis.indiasouthcentral.cloudapp.azure.com](https://cybergis.indiasouthcentral.cloudapp.azure.com)**
+
+[![Coverage Service landing page: search for a place or draw a box, then download its elevation as a GeoTIFF](docs/landing-page.png)](https://cybergis.indiasouthcentral.cloudapp.azure.com)
+
+Search for a place in India (or draw a box on the map) and download its elevation as a GeoTIFF, or request it
+directly from the API:
+
+```bash
+curl -o hyderabad.tif \
+  "https://cybergis.indiasouthcentral.cloudapp.azure.com/collections/cartodem/coverage?bbox=78.40,17.35,78.50,17.45&f=GTiff"
+```
 
 **Full documentation:** [OGC_API_COVERAGES.md](OGC_API_COVERAGES.md) covers the gap evidence, service design, implementation choices, API reference, compliance results, setup and known limitations.
 
