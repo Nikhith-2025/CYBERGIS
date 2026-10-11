@@ -2,6 +2,9 @@
 #
 #   PYGEOAPI_SERVER_URL=http://<public-address> docker compose up -d --build
 #
+# With HTTPS, add the override file (see docker-compose.https.yml):
+#   docker compose -f docker-compose.yml -f docker-compose.https.yml up -d
+#
 # Bhoonidhi credentials come from .env (never committed). data/ holds the tile
 # cache, the mosaic and the Bhoonidhi session, shared by both replicas.
 
@@ -36,8 +39,10 @@ services:
     ports:
       - "${HTTP_PORT:-80}:80"
     volumes:
-      - ./deploy/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./deploy/nginx:/etc/nginx/cybergis:ro
+      - ./deploy/nginx/http.conf:/etc/nginx/conf.d/default.conf:ro
       - nginx-cache:/var/cache/nginx
+      - certbot-www:/var/www/certbot:ro
     depends_on:
       app1:
         condition: service_healthy
@@ -46,3 +51,4 @@ services:
 
 volumes:
   nginx-cache:
+  certbot-www:

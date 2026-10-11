@@ -1,0 +1,31 @@
+# HTTPS override: nginx serves HTTPS with a Let's Encrypt certificate and
+# redirects HTTP to it; certbot renews the certificate.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.https.yml up -d
+#
+# The certificate must exist first (obtained once, while plain HTTP is running):
+#   docker compose run --rm certbot certonly --webroot -w /var/www/certbot \
+#     --cert-name coverage -d <domain> --agree-tos --register-unsafely-without-email
+
+services:
+  nginx:
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./deploy/nginx/https.conf:/etc/nginx/conf.d/default.conf:ro
+      - letsencrypt:/etc/letsencrypt:ro
+    # Reload every 6 hours so a renewed certificate is picked up
+    command: ["sh", "-c", "while :; do sleep 6h; nginx -s reload; done & exec nginx -g 'daemon off;'"]
+
+  certbot:
+    image: certbot/certbot:v2.11.0
+    restart: unless-stopped
+    volumes:
+      - letsencrypt:/etc/letsencrypt
+      - certbot-www:/var/www/certbot
+    # Renews certificates that are within 30 days of expiry; checks twice a day
+    entrypoint: ["sh", "-c", "trap exit TERM; while :; do certbot renew --webroot -w /var/www/certbot --quiet; sleep 12h & wait $${!}; done"]
+
+volumes:
+  letsencrypt:

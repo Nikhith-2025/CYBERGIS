@@ -1,717 +1,498 @@
 # CartoDEM OGC API - Coverages over Bhoonidhi
 
-An **OGC API - Coverages** service for ISRO/NRSC's **CartoDEM 30 m** elevation model, built with
+An **OGC API - Coverages** service for ISRO/NRSC's **CartoDEM 30 m** elevation data, built with
 [pygeoapi](https://pygeoapi.io) on top of the [Bhoonidhi](https://bhoonidhi.nrsc.gov.in) data portal.
 
-Bhoonidhi only lets you download CartoDEM as whole 1°×1° tiles, after logging in with an email OTP.
-This service lets anyone request **just the area they need** with one HTTP GET:
+**Live:** https://cybergis.indiasouthcentral.cloudapp.azure.com
+
+Bhoonidhi only lets you download CartoDEM as whole 1°×1° tiles, after logging in with an emailed OTP. This service
+lets anyone get **just the area they need** with one HTTP request, or by drawing a box on the website:
 
 ```bash
-# Elevation of a 0.1° × 0.1° patch of Hyderabad as a GeoTIFF: one request, no login, about 330 KB
+# Elevation of central Hyderabad (about 11 × 11 km) as a GeoTIFF: one request, no login
 curl -o hyderabad.tif \
-  "http://localhost:5000/collections/cartodem/coverage?subset=Lat(17.35:17.45),Long(78.40:78.50)&f=GTiff"
+  "https://cybergis.indiasouthcentral.cloudapp.azure.com/collections/cartodem/coverage?bbox=78.40,17.35,78.50,17.45&f=GTiff"
 ```
-
-The same data from Bhoonidhi directly means: log in with an OTP, search, download a 44.5 MB zip,
-unzip a 52 MB GeoTIFF and clip it yourself in GDAL or QGIS.
 
 ---
 
 ## Contents
 
 1. [The gap](#1-the-gap)
-2. [What the service does](#2-what-the-service-does)
-3. [Architecture](#3-architecture)
-4. [The data](#4-the-data)
-5. [API reference](#5-api-reference)
-6. [OGC compliance](#6-ogc-compliance)
-7. [The hybrid fetch layer](#7-the-hybrid-fetch-layer)
-8. [Performance](#8-performance)
-9. [Implementation choices](#9-implementation-choices)
-10. [Setup and running](#10-setup-and-running)
-11. [Project layout](#11-project-layout)
-12. [Known limitations](#12-known-limitations)
-13. [Bhoonidhi API findings](#13-bhoonidhi-api-findings)
-14. [Future work](#14-future-work)
-15. [Data credit](#15-data-credit)
+2. [How it works](#2-how-it-works)
+3. [The data](#3-the-data)
+4. [Using the service](#4-using-the-service)
+5. [OGC compliance](#5-ogc-compliance)
+6. [Performance](#6-performance)
+7. [Deployment](#7-deployment)
+8. [Running locally](#8-running-locally)
+9. [Project layout](#9-project-layout)
+10. [Design decisions](#10-design-decisions)
+11. [Known limitations](#11-known-limitations)
+12. [Bhoonidhi API findings](#12-bhoonidhi-api-findings)
+13. [Future work](#13-future-work)
+14. [Data credit](#14-data-credit)
 
 ---
 
 ## 1. The gap
 
-**There is no standards-based way to request part of CartoDEM.** Every route Bhoonidhi offers delivers
-whole tiles, and none of them is an OGC coverage interface. All checks below were made on 2026-10-11.
+**There is no standards-based way to request part of CartoDEM.** Every route Bhoonidhi offers delivers whole
+tiles, and none of them is an OGC coverage interface (checked on 2026-10-11).
 
-### 1.1 What Bhoonidhi offers today
-
-| Access route | What it gives you | Subset an area? | OGC coverage standard? |
+| Access route | What it gives you | Subset an area? | OGC coverage interface? |
 |---|---|---|---|
-| Web portal ([bhoonidhi.nrsc.gov.in](https://bhoonidhi.nrsc.gov.in)) | Search, add to cart, download whole tile zips | No | No |
-| Bhoonidhi API ([spec](https://bhoonidhi.nrsc.gov.in/bhoonidhi-api/)): `/data/search` | STAC catalogue search | No: `bbox` only **selects tiles** | No (STAC is for discovery) |
-| Bhoonidhi API: `/download?id=&collection=` | Whole product by id | No | No |
-| Portal map view | WMTS `GetTile` requests with `format=image/jpeg` | No | Map **pictures**, not elevation values |
+| Bhoonidhi web portal | Search, add to cart, download whole tile zips | No | No |
+| Bhoonidhi API `/data/search` | STAC catalogue search | No: `bbox` only chooses tiles | No (STAC is for finding files) |
+| Bhoonidhi API `/download` | Whole product by id | No | No |
+| Portal map view | WMTS tiles with `format=image/jpeg` | No | Map pictures, not elevation values |
 
-### 1.2 Evidence
+**Evidence**
 
-**The Bhoonidhi API has no coverage endpoints.** The API specification documents only `/auth/token`,
-`/auth/logout`, `/data/collections`, `/data/search` and `/download`. WCS, WMS and OGC API aren't mentioned.
-Probing for them confirms it:
+- **No coverage endpoints on Bhoonidhi.** The [API specification](https://bhoonidhi.nrsc.gov.in/bhoonidhi-api/)
+  lists only `/auth/token`, `/auth/logout`, `/data/collections`, `/data/search` and `/download`. Requests for `/wcs`,
+  `/collections` and `/conformance` on `bhoonidhi-api.nrsc.gov.in` return `404 Route Not Found`, and
+  `bhoonidhi.nrsc.gov.in/geoserver/ows?service=WCS` returns 404.
+- **Even the catalogue needs a login.** `GET /data/collections/CartoSat-1_PAN_CartoDEM_30m` returns 401 without a token.
+- **No data in the STAC items.** A CartoDEM item lists only a `metadata` and a `thumbnail` asset; the elevation data is
+  only available as a whole-product download.
+- **Bhuvan, ISRO's other geoportal, has WCS switched off.** `bhuvan-vec1…/bhuvan/wcs?request=GetCapabilities` answers
+  `"Service WCS is disabled"`; `bhuvan-ras1` returns 403 and `bhuvan-ras2` 404. Its WMS (6,672 layer entries) has no
+  national CartoDEM, and WMS returns pictures, not values.
+- **The documented API can't download CartoDEM.** With a valid token, `/download` always answers
+  `401 "Invalid session detected! Please login."`, while search accepts the same token (every variant tried; see
+  [section 12](#12-bhoonidhi-api-findings)). The only working route is the portal's own login, which needs a
+  **6-digit OTP emailed to the account holder**. The most complete community client,
+  [`bhoonidhi-downloader`](https://pypi.org/project/bhoonidhi-downloader/), uses that portal login for the same reason.
 
-| Request | Response |
-|---|---|
-| `GET https://bhoonidhi-api.nrsc.gov.in/wcs?service=WCS&request=GetCapabilities` | `404 Route Not Found` |
-| `GET https://bhoonidhi-api.nrsc.gov.in/collections` | `404 Route Not Found` |
-| `GET https://bhoonidhi-api.nrsc.gov.in/conformance` | `404 Route Not Found` |
-| `GET https://bhoonidhi.nrsc.gov.in/geoserver/ows?service=WCS&request=GetCapabilities` | `404` |
-| `GET https://bhoonidhi-api.nrsc.gov.in/data/collections/CartoSat-1_PAN_CartoDEM_30m` (no login) | `401 UNAUTHORIZED`: even the catalogue needs a login |
+**Why STAC isn't enough.** Bhoonidhi's search follows STAC, an OGC Community Standard, but STAC only says *which
+tile* covers an area. It has no way to ask for *the elevation values inside an area*: no spatial subsetting, no field
+selection, no output format. That is what OGC API - Coverages (and WCS before it) provides.
 
-**The STAC catalogue has no data asset for CartoDEM.** The search result for tile `P5_PAN_CD_N17_000_E078_000_30m`
-lists only a `metadata` (`.meta`) and a `thumbnail` (`.jpg`) asset. The elevation data is only reachable as a
-whole-product download.
-
-**Bhuvan, ISRO's other geoportal, has WCS switched off.**
-
-| Request | Response |
-|---|---|
-| `GET https://bhuvan-vec1.nrsc.gov.in/bhuvan/wcs?service=WCS&request=GetCapabilities` | `ServiceUnavailable: "Service WCS is disabled"` |
-| `GET https://bhuvan-ras1.nrsc.gov.in/bhuvan/wcs?...` | `403 Forbidden` |
-| `GET https://bhuvan-ras2.nrsc.gov.in/bhuvan/wcs?...` | `404 Not Found` |
-
-Bhuvan's WMS on `bhuvan-vec1` lists 6,672 layer entries. None is a national CartoDEM; there are only a few
-regional elevation, contour and slope layers (`CG_ELEVATION`, `cleanganga:Elevation`, `sdv:Contour_ap_dem_1`),
-and WMS returns rendered images, not values.
-
-**The portal's own OGC use is visual only.** Its network traffic shows WMTS tile requests with
-`format=image/jpeg` for the map background, then its own `SatSenServlet`, `ProductSearch` and `CartServlet`
-requests for the actual data.
-
-**Getting CartoDEM today is a manual, whole-tile process.** In the portal you pick an area, a resolution
-filter and the `CartoSat-1_PAN_CartoDEM-30m` product, add tiles to a cart, then download complete tiles.
-
-**The documented API cannot download CartoDEM at all.** With a valid token, used within seconds, exactly as
-the specification describes, `/download` always answers
-`401 {"Description":"UNAUTHORIZED","Action":"Invalid session detected! Please login."}`.
-Search with the same token succeeds. Every variant was tested: fresh password-grant token, refresh-grant token,
-token without `Bearer`, token as a query parameter, POST instead of GET, after logging out of the portal, and
-with an OTP-verified portal token. The only working route is the web portal's own login, which **requires a
-6-digit OTP emailed to the account holder**. The most complete community client,
-[`bhoonidhi-downloader`](https://pypi.org/project/bhoonidhi-downloader/), uses the portal login with an
-interactive OTP prompt for the same reason, not the documented API.
-
-### 1.3 Why STAC isn't enough
-
-Bhoonidhi's search follows STAC, which is an OGC Community Standard, so it's fair to ask whether Bhoonidhi
-"already has an OGC interface". It does, but only for **finding files**. STAC tells you *which tile* covers
-an area. It defines no way to ask the server for *the elevation values inside an area*: no spatial subsetting,
-no field selection, no output-format choice. That is exactly what OGC API - Coverages (and WCS before it) adds.
-
-### 1.4 Who this affects
-
-Anyone who needs elevation for an area rather than a tile: a hydrologist modelling one watershed, an app
-showing a terrain profile, a notebook sampling heights along a road. Today each has to log in with an OTP,
-download whole tiles (often several, merged and clipped) and handle the data locally. None of it can be
-automated end to end, because the OTP needs a person.
-
----
-
-## 2. What the service does
-
-- Serves CartoDEM for **all of India and its surroundings (68–98°E, 6–38°N)** as one OGC API - Coverages collection, `cartodem`.
-- Returns **only the requested area**, by `subset` on `Lat`/`Long` or by `bbox`, as **GeoTIFF** or **CoverageJSON**.
-- Returned pixels are **bit-identical** to the source data (checked by the test suite against a GDAL clip).
-- **Fetches tiles on demand.** If a request touches a tile that isn't cached, the service finds it in Bhoonidhi's
-  STAC catalogue, downloads it, converts it to a Cloud-Optimized GeoTIFF, adds it to the mosaic and then answers.
-  Later requests for that area come straight from the cache.
-- Needs **no login for users**. Only the service operator has a Bhoonidhi account.
+**Who this affects.** Anyone who needs elevation for an area rather than a tile (a watershed model, a terrain
+profile in an app, heights along a road) has to log in with an OTP, download whole tiles, merge and clip them. None of
+it can be automated, because the OTP needs a person.
 
 | | Bhoonidhi today | This service |
 |---|---|---|
-| Get elevation for a 0.1° × 0.1° area | Log in with OTP → search → cart → download 44.5 MB zip → unzip 52 MB → clip yourself | **One GET**, about 330 KB GeoTIFF |
-| Machine-to-machine access | Not possible (OTP needs a person) | Any HTTP client |
-| Standard | STAC search only | **OGC API - Coverages** (8 conformance classes) |
-| Response time, cached area | n/a | **about 15 ms** |
-| Response time, first request for a new tile | n/a | **about 10–13 s** (fetched from Bhoonidhi once) |
+| Elevation for an 11 km area | OTP login → search → cart → download a 44.5 MB zip → unzip 52 MB → clip yourself | **One request**, about 330 KB |
+| Machine-to-machine access | Not possible | Any HTTP client |
+| Standard | STAC search only | OGC API - Coverages |
 
 ---
 
-## 3. Architecture
+## 2. How it works
 
 ```
-                     ┌──────────────────────────────────────────────────────────────┐
-  HTTP client ──GET──▶  cartodem_service/app.py                                      │
-  (curl, QGIS,       │   pygeoapi Flask app + middleware                             │
-   Python, browser)  │   (malformed bbox → 400, Accept: image/tiff → f=GTiff)        │
-                     │        │                                                      │
-                     │        ▼                                                      │
-                     │  pygeoapi OGC API - Coverages                                 │
-                     │  (landing page, conformance, collections, schema, coverage)   │
-                     │        │                                                      │
-                     │        ▼                                                      │
-                     │  cartodem_service/provider.py  CartoDEMProvider               │
-                     │   1. request → pixel window on the India grid                 │
-                     │   2. size limits (413 if too large)                           │
-                     │   3. tiles.ensure_tiles(window) ──────────────┐               │
-                     │   4. read window from data/cartodem.vrt       │               │
-                     │   5. encode GeoTIFF or CoverageJSON           │               │
-                     │                                               ▼               │
-                     │  cartodem_service/tiles.py  (tile cache)                      │
-                     │   which 1° tiles? cached? absent? → lock → fetch → COG → VRT  │
-                     │                                               │               │
-                     │  cartodem_service/bhoonidhi.py  (Bhoonidhi client)            │
-                     │   STAC search: documented API, cached tokens, throttled       │
-                     │   download:   portal session (OTP), whole tile zip            │
-                     └───────────────────────────────────────────────│──────────────┘
-                                                                     ▼
-                                                     Bhoonidhi (NRSC/ISRO)
-                                                     bhoonidhi-api.nrsc.gov.in  (search)
-                                                     bhoonidhi.nrsc.gov.in      (download)
+ client (browser, curl, Python, GIS)
+        │  HTTPS
+        ▼
+ nginx ── cache, rate limit, gzip, failover
+        │
+        ▼
+ 2 replicas: pygeoapi + CartoDEMProvider (gunicorn)
+        │  1. requested area → pixel window on a fixed India grid
+        │  2. size check (413 if too large)
+        │  3. make sure the 1° tiles under it are cached ─────▶ Bhoonidhi
+        │       (search the catalogue, download, convert)       (new tiles only)
+        │  4. read the window from the mosaic
+        ▼  5. return GeoTIFF or CoverageJSON
+ data/: tile cache (Cloud-Optimized GeoTIFFs) + VRT mosaic, shared by both replicas
 ```
 
-### Request flow
+### 2.1 Serving a request
 
-1. pygeoapi parses and validates the OGC parameters (`subset`, `bbox`, `properties`, `f`).
-2. `CartoDEMProvider` converts the requested bounds into a **pixel window** on the fixed India grid,
-   including every pixel that touches the area.
-3. It rejects requests that are too large (see [limits](#74-limits)).
-4. `tiles.ensure_tiles()` makes sure every 1° tile under the window is cached, fetching up to 4 from Bhoonidhi if needed.
-5. The window is read from the VRT mosaic. Only the needed 512×512 blocks of each COG are read from disk.
-6. The pixels are encoded as GeoTIFF (DEFLATE compressed) or CoverageJSON.
+1. pygeoapi validates the OGC parameters (`bbox`, `subset`, `properties`, `f`).
+2. `CartoDEMProvider` turns the area into a **pixel window**, including every pixel that touches it.
+3. Requests over the size limits get **413** (see [2.4](#24-limits)).
+4. Every 1° tile under the window is made available, fetching it from Bhoonidhi if needed ([2.2](#22-fetching-tiles-from-bhoonidhi)).
+5. The window is read from the VRT mosaic; only the needed 512×512 blocks of each tile are read from disk.
+6. The pixels are returned as GeoTIFF (DEFLATE compressed) or CoverageJSON (nodata as `null`).
+
+Returned pixels are **bit-identical** to the source data; the compliance tests compare them with a GDAL clip.
+
+### 2.2 Fetching tiles from Bhoonidhi
+
+The service doesn't keep a full copy of CartoDEM. It **fetches tiles the first time an area is requested** and
+keeps them, so Bhoonidhi stays the source and only areas people use take up disk.
+
+```
+area ─▶ which 1° tiles? ─▶ all cached (or known to be sea)? ── yes ─▶ serve
+                                     │ no
+                                     ▼
+                       more than 4 missing? ── yes ─▶ 413
+                                     │ no
+                                     ▼
+          lock the missing tiles ─▶ search Bhoonidhi's catalogue ─▶ download ─▶ convert ─▶ add to mosaic ─▶ serve
+                                     │
+                                     ├─ not in the catalogue (open sea) ─▶ remembered, served as nodata
+                                     └─ not online at Bhoonidhi          ─▶ 503 (must be ordered in the portal)
+```
+
+| Situation | Result (measured) |
+|---|---|
+| First request for a new area | 200 in about **10–13 s** (tile fetched once) |
+| The same area again | 200 in about **15 ms** |
+| 6 users asking for the same new tile at once | **one** download; all 6 get identical data |
+| An area with no tile (Bay of Bengal) | 200, all nodata; repeats in 7 ms with no Bhoonidhi call |
+
+**Concurrency.** Each tile has a file lock shared by all threads, processes and replicas, so a tile is downloaded
+once. Locks are taken in sorted order (no deadlocks), before the catalogue search (waiting requests don't search
+again), and the mosaic is rebuilt before they're released (a waiting request never reads an incomplete mosaic).
+Files are written to temporary names and renamed into place, so nothing half-written is ever read.
+
+### 2.3 Talking to Bhoonidhi
+
+| Purpose | Route | Authentication |
+|---|---|---|
+| Catalogue search | Documented API `POST /data/search` | Password login; tokens are **cached and refreshed** (access 20 min, refresh 5 h), so a search doesn't use one of the 20 logins per hour |
+| Tile download | Portal `GET /bhoonidhi/data/CARTODEM/P5/PAN/30m/<id>.zip?token=…&product_id=<id>` | Portal login with a **6-digit OTP emailed to the account holder**; the session lasts 6 hours and is tied to the server's IP |
+
+- **Within Bhoonidhi's limits:** searches are spaced at least 0.5 s apart across all processes (Bhoonidhi allows 3 per
+  second), and a request can fetch at most 4 new tiles (Bhoonidhi allows 5 concurrent downloads).
+- **Retries:** an empty reply (seen under load) is retried once, then reported as 503.
+- **Secrets:** credentials come from `.env`; tokens and the session are kept in `data/` with owner-only permissions.
+  Neither is ever committed.
+
+### 2.4 Limits
+
+| Limit | Value | Why |
+|---|---|---|
+| New tiles fetched per request | **4** | Covers any city or district; stays under Bhoonidhi's 5 concurrent downloads and daily quota |
+| Largest GeoTIFF | **4 square degrees** (about 4 tiles) | Caps memory per request (about 200 MB at most) |
+| Largest CoverageJSON | **0.1 square degrees** | CoverageJSON is text; 0.04 deg² is already about 18 MB |
+
+A request with no area asks for the whole coverage (960 square degrees) and gets a 413 explaining the limits.
 
 ---
 
-## 4. The data
+## 3. The data
 
-### 4.1 CartoDEM
-
-| Property | Value (from Bhoonidhi item metadata and the GeoTIFF itself) |
+| Property | Value (from Bhoonidhi's item metadata and the files) |
 |---|---|
 | Bhoonidhi collection | `CartoSat-1_PAN_CartoDEM_30m` |
-| Platform / instrument | Cartosat-1 (`P5`), panchromatic stereo (`PAN`) |
-| Producer / version | NRSC, Version 4.0 |
+| Source | Cartosat-1 (`P5`) panchromatic stereo imagery, produced by NRSC, Version 4.0 |
 | Resolution | 1 arc-second (about 30 m) |
 | Accuracy | 8 m vertical (LE90), 15 m horizontal (CE90) |
-| Datum / CRS | WGS84, geographic (EPSG:4326) |
-| Tiling | 1°×1° tiles, 3600 × 3600 pixels, ids like `P5_PAN_CD_N17_000_E078_000_30m` |
-| Raw format | GeoTIFF, Float32, one band, nodata −32768, stored in one-row strips, uncompressed |
+| Coordinates | WGS84 longitude/latitude (EPSG:4326) |
+| Tiles | 1°×1°, 3600 × 3600 pixels, ids like `P5_PAN_CD_N17_000_E078_000_30m` |
+| Values | Float32 metres, nodata −32768 |
+| Served extent | 68–98°E, 6–38°N (India and surroundings) |
 
-**Heights are relative to the WGS84 ellipsoid, not mean sea level.** Served values sit consistently 50–90 m below
-familiar mean-sea-level heights (Delhi about 163 m, Bengaluru about 821 m, Hyderabad about 460 m), which matches the
-geoid–ellipsoid separation over India.
+- **Heights are above the WGS84 ellipsoid, not mean sea level.** Values sit 50–90 m below familiar heights (Delhi
+  about 163 m, Bengaluru about 821 m, Hyderabad about 460 m), matching the geoid–ellipsoid gap over India.
+- **It is a surface model** from optical imagery, so heights include buildings and trees.
 
-It is a **surface** model from optical stereo imagery, so heights include buildings and tree canopy.
-
-### 4.2 Pipeline
-
-```
-Bhoonidhi zip (44.5 MB)
-   └─▶ data/raw/<tile>/<tile>_DEM_30m.tif        raw GeoTIFF, 51.9 MB, strip layout
-         └─▶ data/cache/<tile>_DEM_30m.tif      Cloud-Optimized GeoTIFF
-               │   512×512 internal tiles, DEFLATE + floating-point predictor,
-               │   overviews 1800², 900², 450², about 40 MB (23% smaller)
-               └─▶ data/cartodem.vrt             GDAL virtual mosaic of all cached tiles,
-                                                 fixed grid 68–98°E × 6–38°N (108000 × 115200 px)
-```
-
-- **Lossless:** the COG's pixel checksum equals the raw tile's.
-- **Fixed-grid VRT:** the mosaic always spans the full extent, so any request maps to the same pixel grid
-  whether or not its tiles are cached yet. The VRT is a small XML index file (a few KB).
-- **Atomic updates:** COGs are written to `*.part` and the VRT to `*.tmp`, then renamed into place, so a request
-  never reads a half-written file.
+**Processing.** Each downloaded tile (a 44.5 MB zip holding a 52 MB GeoTIFF) is converted, losslessly, into a
+**Cloud-Optimized GeoTIFF**: 512×512 internal tiles, DEFLATE compression and overviews, about 40 MB. A GDAL **VRT
+mosaic** (a few KB of XML) lists all cached tiles on one fixed grid covering the whole extent, so every request maps
+to the same pixel grid whether or not its tiles are cached yet.
 
 ---
 
-## 5. API reference
+## 4. Using the service
 
-Base URL when running locally: `http://localhost:5000`
+### 4.1 The website
 
-| Endpoint | Purpose |
+The home page is an **area picker**: search for a place (e.g. "Kurnool") or press **Draw area** and click two
+corners. It shows the box size, checks it against the limits, and offers **Download GeoTIFF**, **View on map**
+(terrain colours) and the exact request URL to copy. It only builds the standard request below; it has no API of its
+own. Place search uses OpenStreetMap's Nominatim.
+
+The other pages (collections, collection details, schema, conformance and the Swagger API documentation) let you
+browse the service. Every endpoint also returns HTML with `?f=html`.
+
+### 4.2 Endpoints
+
+| Endpoint | Returns |
 |---|---|
-| `GET /` | Landing page, with links to the API definition, conformance and collections |
-| `GET /conformance` | Conformance classes the service implements |
-| `GET /openapi` | OpenAPI 3.0 definition (`?f=json` for JSON) |
-| `GET /collections` | Collection list (one collection: `cartodem`) |
-| `GET /collections/cartodem` | Collection metadata, extent and links |
-| `GET /collections/cartodem/schema` | Range type: one field, `elevation`, in metres |
-| `GET /collections/cartodem/coverage` | **The coverage**, with the query parameters below |
+| `/` | Landing page, with links to everything below |
+| `/conformance` | The conformance classes implemented |
+| `/openapi` | OpenAPI 3.0 description (`?f=json`); Swagger UI in a browser |
+| `/collections` | The collections (one: `cartodem`) |
+| `/collections/cartodem` | Collection metadata and extent |
+| `/collections/cartodem/schema` | The field: `elevation`, in metres |
+| `/collections/cartodem/coverage` | **The coverage**, with the parameters below |
 
-Every endpoint also returns HTML with `?f=html`, so the service can be browsed.
-
-### Getting an area without writing URLs
-
-The landing page at [http://localhost:5000](http://localhost:5000) is an area picker for people who don't want
-to build URLs by hand:
-
-1. **Search** for a place in India (for example "Kurnool"), or press **Draw area** and click two corners on the map.
-   The West/South/East/North boxes can also be edited directly.
-2. The page shows the box size and checks it against the service limits before anything is sent.
-3. **Download GeoTIFF** saves the area, and **View on map** shows it with a terrain colour scale.
-4. The exact request URL is shown with a Copy button, so the same request can go into a script.
-
-The page only builds the standard `bbox` request described below; it adds no API of its own. Place search uses
-OpenStreetMap's Nominatim, called from the browser when you press Search.
-
-### 5.1 Coverage query parameters
+### 4.3 Coverage parameters
 
 | Parameter | Example | Meaning |
 |---|---|---|
-| `subset` | `subset=Lat(17.35:17.45),Long(78.40:78.50)` | Spatial subset on one or both axes, in degrees. Axis names are `Lat` and `Long`. |
-| `bbox` | `bbox=78.40,17.35,78.50,17.45` | Alternative spatial subset: minLon,minLat,maxLon,maxLat. Can't be combined with a `Lat`/`Long` subset. |
-| `bbox-crs` | `bbox-crs=http://www.opengis.net/def/crs/EPSG/0/32644` | CRS of `bbox` if not WGS84 longitude/latitude |
-| `properties` | `properties=elevation` | Range subset (the only field is `elevation`) |
-| `f` | `f=GTiff`, `f=json`, `f=html` | Output format. `json` is CoverageJSON. |
+| `bbox` | `bbox=78.40,17.35,78.50,17.45` | Area as `minLon,minLat,maxLon,maxLat` in degrees |
+| `subset` | `subset=Lat(17.35:17.45),Long(78.40:78.50)` | Area as a range on one or both axes; can't be combined with `bbox` |
+| `bbox-crs` | `bbox-crs=http://www.opengis.net/def/crs/EPSG/0/32644` | CRS of `bbox`, if not WGS84 longitude/latitude |
+| `properties` | `properties=elevation` | Field to return (the only one is `elevation`) |
+| `f` | `f=GTiff`, `f=json`, `f=html` | GeoTIFF, CoverageJSON (default) or a map view |
 | `Accept` header | `Accept: image/tiff` | Same as `f=GTiff` |
 
-### 5.2 Examples
+### 4.4 Examples
 
 ```bash
-B=http://localhost:5000/collections/cartodem/coverage
+B=https://cybergis.indiasouthcentral.cloudapp.azure.com/collections/cartodem/coverage
 
-# GeoTIFF of central Hyderabad
-curl -o hyd.tif "$B?subset=Lat(17.35:17.45),Long(78.40:78.50)&f=GTiff"
-
-# Same area by bbox
-curl -o hyd.tif "$B?bbox=78.40,17.35,78.50,17.45&f=GTiff"
-
-# CoverageJSON of a small patch (values in metres, nodata as null)
-curl "$B?subset=Lat(17.40:17.41),Long(78.40:78.41)&properties=elevation&f=json"
-
-# GeoTIFF by content negotiation
-curl -H "Accept: image/tiff" -o hyd.tif "$B?subset=Lat(17.35:17.45),Long(78.40:78.50)"
-
-# An area that isn't cached yet (here Delhi): the first request fetches the tile from Bhoonidhi
-curl -o delhi.tif "$B?subset=Lat(28.60:28.65),Long(77.20:77.25)&f=GTiff"
+curl -o hyd.tif "$B?bbox=78.40,17.35,78.50,17.45&f=GTiff"                       # GeoTIFF by bbox
+curl -o hyd.tif "$B?subset=Lat(17.35:17.45),Long(78.40:78.50)&f=GTiff"          # same area by subset
+curl "$B?bbox=78.40,17.40,78.41,17.41&properties=elevation&f=json"              # CoverageJSON values
+curl -H "Accept: image/tiff" -o hyd.tif "$B?bbox=78.40,17.35,78.50,17.45"       # GeoTIFF by Accept header
 ```
 
-Reading it from Python. Download the response first: responses are generated per request, so GDAL can't
-open the URL directly with HTTP range requests.
+In Python (download first: responses are generated per request, so GDAL can't open the URL with range requests):
 
 ```python
 import requests
 from rasterio.io import MemoryFile
 
-url = ("http://localhost:5000/collections/cartodem/coverage"
-       "?subset=Lat(17.35:17.45),Long(78.40:78.50)&f=GTiff")
+url = ("https://cybergis.indiasouthcentral.cloudapp.azure.com/collections/cartodem/coverage"
+       "?bbox=78.40,17.35,78.50,17.45&f=GTiff")
 resp = requests.get(url, timeout=120)
 resp.raise_for_status()
 with MemoryFile(resp.content) as mem, mem.open() as src:
     dem = src.read(1, masked=True)
-    print(dem.shape, dem.min(), dem.max())     # (360, 360) 396.25 569.19
+    print(dem.shape, dem.min(), dem.max())
 ```
 
-### 5.3 Responses
+### 4.5 Responses
 
 | Status | When |
 |---|---|
-| `200` | Coverage returned (`image/tiff` or `application/prs.coverage+json`). Areas with no CartoDEM tile (open sea) are nodata. |
-| `400` | Bad request: unknown axis, malformed subset or bbox, lower bound above upper bound, area outside the extent, `bbox` together with a `Lat`/`Long` subset, unknown property |
+| `200` | The area, as `image/tiff` or `application/prs.coverage+json`. Areas with no tile (open sea) are nodata |
+| `400` | Malformed `bbox`/`subset`, unknown axis or property, area outside the extent, `bbox` together with `subset` |
 | `404` | Unknown collection |
-| `413` | Too large: over the area limit, or needs more than 4 uncached tiles (see [limits](#74-limits)) |
-| `503` | A tile is needed from Bhoonidhi but can't be fetched (Bhoonidhi down, or the operator's OTP session has expired) |
+| `413` | Too large: over the area limit, or more than 4 new tiles needed |
+| `429` | Too many requests from one IP (over 20 per second) |
+| `503` | A new tile can't be fetched right now (Bhoonidhi unavailable, or the operator's OTP session has expired) |
 
-Errors are OGC exception documents, for example:
-
-```json
-{
-  "code": "NoApplicableCode",
-  "type": "NoApplicableCode",
-  "description": "Request needs 6 tiles that are not cached yet; at most 4 can be fetched per request. Request a smaller area."
-}
-```
+Errors are OGC exception documents with a `description` explaining the problem.
 
 ---
 
-## 6. OGC compliance
+## 5. OGC compliance
 
-The service declares these OGC API - Coverages Part 1 conformance classes:
-
+Implemented conformance classes (OGC API - Coverages Part 1):
 `core` · `oas30` · `html` · `geodata-coverage` · `coverage-subset` · `coverage-rangesubset` · `coverage-bbox` · `coverage-datetime`
 
-`tests/compliance_test.py` checks each one against the running server with real HTTP requests, and verifies
-returned GeoTIFFs with GDAL. **Current result: 39/39 checks pass.**
+`tests/compliance_test.py` checks every class against a running server with real requests and verifies returned
+GeoTIFFs with GDAL. **Result: 39/39 checks pass**, on the live server and locally.
 
 | Class | Checks | What is verified |
 |---|---|---|
-| core | 16 | Landing page and its `service-desc`, `service-doc`, `conformance`, `data` links; `/conformance`; `/collections`; collection extent; `/coverage` returns CoverageJSON as a Grid; parameter `elevation` in metres; schema link and `elevation` field |
-| geodata-coverage | 2 | Collection and `/collections` entry link to the coverage |
-| coverage-subset | 7 | GeoTIFF returned; bounds match the request to within one pixel; **pixels identical to a GDAL clip of the source**; single-axis subset honoured (or a 413 if it exceeds the limits); unknown axis, malformed subset and out-of-extent area each give 4xx |
-| coverage-bbox | 4 | `bbox` returns GeoTIFF; result is identical to the equivalent `subset`; `bbox` with `subset` gives 4xx; 3-number `bbox` gives 4xx |
-| coverage-rangesubset | 2 | `properties=elevation` returns 200; an unknown property returns 400 |
-| coverage-datetime | 1 | `datetime` on a coverage with no time axis is handled |
-| oas30 | 2 | OpenAPI 3.x document that describes the coverage path |
-| html | 3 | Landing page, collections and the collection as HTML |
-| general | 2 | Unknown collection gives 404; `Accept: image/tiff` negotiates GeoTIFF |
+| core | 16 | Landing page and its links, `/conformance`, `/collections`, collection extent, coverage returned as a CoverageJSON grid, `elevation` field in metres, schema |
+| geodata-coverage | 2 | Collections link to their coverage |
+| coverage-subset | 7 | Bounds match the request; **pixels identical to a GDAL clip of the source**; single-axis subset; bad axis, bad syntax and out-of-extent requests give 4xx |
+| coverage-bbox | 4 | `bbox` gives the same result as the equivalent `subset`; invalid combinations give 4xx |
+| coverage-rangesubset | 2 | `properties=elevation` works; an unknown field gives 400 |
+| coverage-datetime | 1 | `datetime` is handled (CartoDEM has no time axis) |
+| oas30 | 2 | Valid OpenAPI 3.x document describing the coverage endpoint |
+| html | 3 | Landing page, collections and collection as HTML |
+| general | 2 | Unknown collection gives 404; `Accept: image/tiff` gives GeoTIFF |
 
-Run it against a running server:
+**What had to be fixed.** pygeoapi's stock raster provider failed 6 of these checks. The custom provider and a small
+middleware fix them:
 
-```bash
-.venv/bin/python tests/compliance_test.py                        # http://localhost:5000
-.venv/bin/python tests/compliance_test.py https://your-host.example
-```
-
-### Problems found by the tests and fixed
-
-pygeoapi's stock rasterio provider and API failed 6 of these checks:
-
-| Problem with the stock setup | Fix |
+| Problem | Fix |
 |---|---|
-| Polygon-mask clipping blanked the outer row and column to nodata (721 pixels in a 361×361 clip) | `CartoDEMProvider` reads a pixel window instead, so pixels now match GDAL exactly |
-| A subset on only one axis (`Lat` only) gave 500 | Each axis is handled independently |
-| An area outside the extent gave 500 | 400 with the extent in the message |
-| `bbox` together with `subset` gave 500 | 400 |
-| A malformed `bbox` gave 500 (pygeoapi's API code reports any bbox error as 500) | Middleware in `app.py` validates `bbox` and answers 400 |
+| Clipping with a polygon mask blanked the outer row and column to nodata | Read a pixel window instead; pixels now match GDAL exactly |
+| A subset on one axis only, an area outside the extent, or `bbox` with `subset` gave 500 | Handled properly: results or 400 |
+| A malformed `bbox` gave 500 | Middleware validates it and answers 400 |
 | `Accept: image/tiff` was ignored | Middleware maps it to `f=GTiff` |
+| The band was unnamed (`null`) with no units | Named `elevation`, in metres |
+| A request with no parameters returned the mosaic's XML | Returns a GeoTIFF, or 413 if too large |
 
-The stock provider also labelled the band `null` in CoverageJSON, with no units, and returned the VRT's XML
-instead of a GeoTIFF for a request with no parameters. Both are fixed in `CartoDEMProvider`.
+pygeoapi's generated OpenAPI document also described the coverage endpoint as a Features endpoint (GeoJSON, "selects
+features", no GeoTIFF). `scripts/patch_openapi.py` corrects that description; the result validates as OpenAPI 3.0.
 
 ---
 
-## 7. The hybrid fetch layer
+## 6. Performance
 
-The service doesn't hold a full copy of CartoDEM. It **caches tiles as they're requested**, so Bhoonidhi stays the
-source of truth and only areas people actually use take up disk.
+Load-tested with [k6](https://k6.io) at **100 simultaneous users** (target: p95 under 500 ms, under 1% errors), with
+random areas inside cached tiles so the test measures the service, not Bhoonidhi. The service and k6 shared one
+16-core machine.
 
-### 7.1 What happens for a request
+| Scenario | Flask dev server (1 process) | gunicorn (8 processes × 4 threads) |
+|---|---|---|
+| mixed: 70% GeoTIFF, 15% CoverageJSON, 15% pages | 107 req/s, p95 1.05 s ✗ | **500 req/s, p95 289 ms** ✓ |
+| GeoTIFF, 5–15 km areas | 168 req/s, p95 631 ms ✗ | **478 req/s, p95 319 ms** ✓ |
+| CoverageJSON, 2–5 km areas | 55 req/s, p95 2.07 s ✗ | **394 req/s, p95 369 ms** ✓ |
 
-```
-request bounds ─▶ which 1° tiles? ─▶ all cached or known absent? ── yes ─▶ read and return
-                                              │ no
-                                              ▼
-                               more than 4 missing? ── yes ─▶ 413
-                                              │ no
-                                              ▼
-                     lock each missing tile (sorted order, across processes)
-                                              ▼
-                     re-check (another request may have just fetched them)
-                                              ▼
-                     STAC search on Bhoonidhi for the missing ids
-                        not in the catalogue → remembered as absent (sea) → nodata
-                        Online != Y          → 503 (must be ordered in the portal)
-                                              ▼
-                     download zip → unzip → COG → rebuild VRT → release locks
-                                              ▼
-                                       read and return
+383,066 requests in total, with no errors. Summaries are in `loadtest/results/`.
+
+- The single development-server process was the bottleneck; even plain pages waited about 1 s under load.
+- **New tiles don't slow anyone else down.** gunicorn uses threaded workers, so a request waiting on a Bhoonidhi
+  download holds one thread. During a 19.8 s download in the middle of a 100-user test, other requests' p95 moved
+  from 340 ms to 349 ms (`loadtest/results/cold-fetch-under-load.md`).
+
+```bash
+k6 run -e SCENARIO=mixed loadtest/coverage.js      # scenarios: mixed, geotiff, covjson, hot
+k6 run -e BASE=https://<host> -e SCENARIO=mixed loadtest/coverage.js
 ```
 
-### 7.2 Measured behaviour
+---
 
-| Scenario | Result |
+## 7. Deployment
+
+The live service runs on an Azure VM (Ubuntu 24.04, 2 CPUs, India South Central) with Docker Compose:
+
+```
+Internet ──HTTPS──▶ nginx ──┬──▶ app1 (gunicorn) ──┐
+                            └──▶ app2 (gunicorn) ──┴──▶ data/ (tiles, mosaic, Bhoonidhi session)
+```
+
+| Feature | Setting |
 |---|---|
-| First request for an uncached area (Bengaluru, Delhi) | 200 in **12.2 s / 12.5 s**, tile fetched from Bhoonidhi |
-| The same request again | 200 in **15 ms / 12 ms** |
-| 6 simultaneous requests for one uncached tile | **one** download, all 6 return identical data **in 3.7 s together** |
-| Area with no CartoDEM tile (Bay of Bengal) | 200, all nodata; repeats take **7 ms** with no Bhoonidhi call |
+| Replicas | Two identical service containers, health-checked every 15 s and restarted if they exit |
+| Failover | nginx skips a replica that fails; requests to a crashed replica are retried on the other |
+| Cache | Coverage responses cached for 24 h (`X-Cache-Status: HIT`); pages and metadata are always fresh |
+| Rate limit | 20 requests/s per IP (bursts of 40), then 429 |
+| HTTPS | Let's Encrypt certificate, HTTP redirected to HTTPS, HSTS, automatic renewal |
+| Timeouts | 120 s for first requests that fetch a tile |
 
-### 7.3 Concurrency and safety
+A VM is used rather than a managed platform because the Bhoonidhi session needs a **fixed outbound IP** and the tile
+cache needs a **persistent disk**. India South Central keeps it close to Bhoonidhi.
 
-- **One download per tile.** Each tile has a file lock (`fcntl`), shared by threads, processes and WSGI workers on
-  the machine. Locks are taken in sorted order, so overlapping requests can't deadlock.
-- **No stale reads.** The mosaic is rebuilt *before* the tile locks are released, so a request that waited and then
-  finds a tile cached also finds it in the mosaic. (An earlier version rebuilt it after releasing the lock, and waiting
-  requests silently got nodata. The concurrency test caught it.)
-- **Waiting requests don't search.** Missing tiles are locked *before* the catalogue search, so concurrent requests
-  wait for one fetch instead of each searching Bhoonidhi.
-
-### 7.4 Limits
-
-| Limit | Value | Why |
-|---|---|---|
-| Uncached tiles fetched per request | **4** | Covers any city or district (a request across a tile corner needs 4), stays under Bhoonidhi's 5 concurrent downloads, protects the account's daily quota |
-| Largest GeoTIFF response | **4 square degrees** (about 4 tiles) | Bounds memory per request (about 200 MB of Float32 at most) |
-| Largest CoverageJSON response | **0.1 square degrees** | CoverageJSON is text: 0.04 deg² is already about 18 MB |
-
-A request with no subset asks for all 960 square degrees, so it gets a 413 explaining the limits.
-
-### 7.5 Talking to Bhoonidhi
-
-| Purpose | Route | Authentication |
-|---|---|---|
-| Catalogue search | Documented API `POST /data/search` | `/auth/token` password grant. Tokens are **cached on disk and renewed with the refresh grant** (access token 20 min, refresh token 5 h), so the service doesn't spend one of the 20 logins per hour on each search. |
-| Tile download | Portal `GET /bhoonidhi/data/CARTODEM/P5/PAN/30m/<id>.zip?token=…&product_id=<id>` | Portal session from `LoginServlet`: password, then a **6-digit OTP emailed to the account holder** |
-
-- **Throttling:** searches are serialised across processes with at least 0.5 s between them (Bhoonidhi allows 3 per second per IP).
-- **Retries:** a garbled upstream reply (HTTP 200 with an empty body, seen under load) is retried once, then reported as 503.
-- **Secrets:** token and session files live in `data/` (git-ignored) with mode `0600`. Credentials come from `.env` (git-ignored).
-
----
-
-## 8. Performance
-
-Load-tested with [k6](https://k6.io) at **100 simultaneous users**, with a target of **p95 under 500 ms and under 1%
-errors**. Each request is a random box inside an already-cached tile, so the test measures the service, not
-Bhoonidhi. k6 ran on the same 16-core machine as the service, so it shared the CPU.
-
-Scenarios (`loadtest/coverage.js`):
-
-- **geotiff:** city-sized boxes (5–15 km) as GeoTIFF.
-- **covjson:** small boxes (2–5 km) as CoverageJSON.
-- **mixed:** 70% GeoTIFF, 15% CoverageJSON, 15% HTML/JSON pages.
-
-Each run ramps 0 → 25 → 50 → 100 users over 90 s, then holds 100 users for 2 minutes.
-
-### 8.1 Results
-
-| Scenario | Server | Requests/s | p50 | p95 | p99 | Errors | Target |
-|---|---|---|---|---|---|---|---|
-| mixed | Flask dev server (1 process) | 107 | 827 ms | 1.05 s | 1.12 s | 0% | ✗ |
-| mixed | **gunicorn, 8 × 4 threads** | **500** | 145 ms | **289 ms** | 355 ms | 0% | ✓ |
-| geotiff | Flask dev server | 168 | 552 ms | 631 ms | 659 ms | 0% | ✗ |
-| geotiff | **gunicorn, 8 × 4 threads** | **478** | 141 ms | **319 ms** | 392 ms | 0% | ✓ |
-| covjson | Flask dev server | 55 | 1.63 s | 2.07 s | 2.20 s | 0% | ✗ |
-| covjson | **gunicorn, 8 × 4 threads** | **394** | 174 ms | **369 ms** | 431 ms | 0% | ✓ |
-
-383,066 requests across the six runs, with no errors. The k6 summaries are in `loadtest/results/`.
-
-- **The bottleneck was the single process, not the raster work.** On the dev server even plain HTML pages took about
-  1 s at p95 under load, because every request queued for one Python process.
-- **CoverageJSON gained the most (7×).** Encoding tens of thousands of values as JSON is CPU-bound, and eight processes
-  do it in parallel.
-
-### 8.2 New tiles don't slow everyone else down
-
-A first request for an uncached area holds its thread for the Bhoonidhi download. gunicorn runs **threaded workers**
-(`gthread`), so that wait ties up one thread, not a process. To check, an uncached area (Jaipur) was requested in the
-middle of a 100-user cached load:
-
-| Cached requests | Requests | p50 | p95 | p99 |
-|---|---|---|---|---|
-| Before the download | 11,530 | 173 ms | 340 ms | 405 ms |
-| **During the 19.8 s download** | 10,669 | 177 ms | **349 ms** | 433 ms |
-| After | 20,707 | 181 ms | 360 ms | 430 ms |
-
-The Jaipur request succeeded in 19.8 s, and cached p95 moved by 9 ms. Details: `loadtest/results/cold-fetch-under-load.md`.
-
-### 8.3 Server settings
-
-`gunicorn.conf.py`: 8 worker processes × 4 threads (`WORKERS` and `THREADS` override them), and a **120 s timeout**
-instead of gunicorn's default 30 s, so a slow Bhoonidhi download isn't killed. Tile downloads and mosaic rebuilds were
-already safe across processes (file locks; see [7.3](#73-concurrency-and-safety)).
-
-### 8.4 Reproducing
+**Deploying on a server** (Ubuntu with Docker, fixed public IP):
 
 ```bash
-scripts/serve.sh                                                   # gunicorn
-k6 run -e SCENARIO=mixed loadtest/coverage.js                      # also: geotiff, covjson, hot
-k6 run -e SCENARIO=mixed --summary-export result.json loadtest/coverage.js
-DEV=1 scripts/serve.sh                                             # Flask dev server, for the baseline
-k6 run -e BASE=http://localhost:8080 -e SCENARIO=hot loadtest/coverage.js   # via the Docker stack
-```
-
----
-
-## 9. Implementation choices
-
-| Decision | Choice | Reasoning |
-|---|---|---|
-| Standard | **OGC API - Coverages** (not WCS 2.0) | The current OGC successor to WCS, with the same purpose. REST/JSON, an OpenAPI definition, and browsable HTML. |
-| Framework | **pygeoapi 0.24** | A widely used Python OGC API server (OSGeo project), with built-in OGC API - Coverages support and a pluggable provider model |
-| Provider | **Custom `CartoDEMProvider`**, subclassing pygeoapi's `RasterioProvider` | The stock provider failed 4 compliance checks and mislabelled the band (see [section 6](#6-ogc-compliance)). The custom provider is also where the fetch layer plugs in. |
-| Storage | **COG per tile + VRT mosaic** | COG: tiled and compressed, so a small clip reads only a few blocks; lossless. VRT: adding a tile means rewriting a few KB of XML, not re-encoding a mosaic. |
-| Mosaic grid | **Fixed 68–98°E × 6–38°N** | Every request maps to the same pixel grid whether or not its tiles are cached yet |
-| Data source | **Hybrid: fetch on demand, then cache** | Stays tied to Bhoonidhi as the source, without depending on it per request. Live proxying would hit Bhoonidhi's 20 logins/hour and 5-download limits immediately, and download whole tiles for every request. |
-| Fetch mode | **Synchronous** | Standard clients (curl, QGIS, GDAL) expect data in the response. The cost is a 10–13 s first request per new tile. |
-| Download route | **Portal session with OTP** | The documented `/download` endpoint rejects every token (see [section 12](#13-bhoonidhi-api-findings)). The portal route is the one the website and community tools use. |
-| API documentation | **Patched OpenAPI document** (`scripts/patch_openapi.py`) | pygeoapi describes the coverage endpoint with shared feature-oriented definitions: `f` claims GeoJSON and omits `GTiff`, `bbox` "selects features" and is an array, and the 200 response is OGC API - Features' document. The patch replaces them for this endpoint only (the shared definitions are correct elsewhere) and documents the 413/503 responses and limits. The result validates as OpenAPI 3.0. |
-| Error handling | **Middleware** in `app.py` | Fixes two pygeoapi API-level gaps without patching pygeoapi |
-| Web pages | **Custom dark theme** in `theme/templates/` | pygeoapi falls back to its own templates for anything not overridden, so only the base layout, landing page (an area picker) and conformance page are replaced. Coverage maps use a terrain colour scale and a keyless dark basemap (Esri World Dark Gray). The conformance page shows class URIs as text: OGC hasn't published pages for the Coverages and Common Part 2 URIs, so linking them gives 404s. |
-| Entry point | **`cartodem_service.app:APP`**, debug off | `pygeoapi serve` runs Flask with `debug=True`, which exposes the Werkzeug debugger. A WSGI app object is also what gunicorn loads. |
-| Deployment | **Docker Compose: nginx + 2 replicas** on one VM | Replicas give resilience (if one crashes, nginx sends its traffic to the other); nginx adds caching, rate limiting and gzip without changing the service. A VM rather than a managed platform because the Bhoonidhi session needs a fixed outbound IP and the tile cache needs a persistent disk. |
-| Server | **gunicorn, 8 processes × 4 threads** (`gthread`), 120 s timeout | Python handles one request at a time per process; eight processes gave 3–7× the throughput (see [Performance](#8-performance)). Threads let a request waiting on Bhoonidhi hold one thread instead of a whole worker. |
-
----
-
-## 10. Setup and running
-
-### 10.1 Prerequisites
-
-- Linux or macOS (file locking uses `fcntl`)
-- Python 3.10+ (developed on 3.12)
-- GDAL command-line tools 3.1+ with the COG driver (`gdalinfo`, `gdal_translate`, `gdalbuildvrt`)
-- A Bhoonidhi account ([register here](https://bhoonidhi.nrsc.gov.in/bhoonidhi/login.html)), only for fetching new tiles
-
-### 10.2 Install
-
-```bash
-python3 -m venv .venv
-.venv/bin/pip install -r requirements.txt
-cp .env.example .env        # then fill in BHOONIDHI_USER_ID and BHOONIDHI_PASSWORD
-```
-
-### 10.3 Log in to Bhoonidhi (operator, about every 6 hours)
-
-```bash
-.venv/bin/python scripts/download_cartodem.py login               # Bhoonidhi emails you an OTP
-.venv/bin/python scripts/download_cartodem.py login --otp 123456
-```
-
-The session lasts **6 hours** and is **bound to the public IP address** it was created from, so run the login
-on the machine that runs the service.
-
-### 10.4 Warm the cache (optional)
-
-```bash
-# Default area: Hyderabad and the tile to its east
-.venv/bin/python scripts/download_cartodem.py fetch
-# Any area (at most 4 new tiles at a time)
-.venv/bin/python scripts/download_cartodem.py fetch --bbox 77.0,28.4,77.4,28.9
-```
-
-Tiles downloaded by hand from the portal can be unzipped into `data/raw/` and prepared with:
-
-```bash
-.venv/bin/python scripts/prepare_tiles.py
-```
-
-### 10.5 Run the service
-
-```bash
-scripts/serve.sh            # http://localhost:5000, under gunicorn
-DEV=1 scripts/serve.sh      # Flask's single-process development server instead
-```
-
-`serve.sh` regenerates the OpenAPI document from `pygeoapi-config.yml`, corrects its coverage endpoint with
-`scripts/patch_openapi.py`, then starts `cartodem_service.app` under gunicorn (`gunicorn.conf.py`).
-
-### 10.6 Test
-
-```bash
-.venv/bin/python tests/compliance_test.py
-```
-
-### 10.7 Deploy with Docker
-
-`docker-compose.yml` runs **nginx** (port 80) in front of **two identical service replicas** that share `./data`
-(tile cache, mosaic, Bhoonidhi session):
-
-```
-Internet ──▶ nginx :80 ──┬─▶ app1 (gunicorn) ─┐
-  cache · rate limit     └─▶ app2 (gunicorn) ─┴─▶ ./data (tiles, mosaic, session)
-  gzip · failover                     │ new tiles only
-                                      ▼
-                                  Bhoonidhi
-```
-
-| Feature | Setting (`deploy/nginx.conf`) |
-|---|---|
-| Load balancing and failover | A replica that fails twice is skipped for 10 s; connections time out after 2 s |
-| Response cache | Successful responses cached 24 h, keyed on URL and `Accept`; `X-Cache-Status` header shows HIT/MISS |
-| Rate limit | 20 requests/s per client IP, bursts of 40, then **429**; the server itself and the Docker network are exempt |
-| gzip | JSON, CoverageJSON, CSS and JavaScript |
-| Timeouts | 120 s read timeout for first requests that fetch a tile |
-| Health and restarts | Each replica is health-checked every 15 s and restarted if it exits |
-
-**On a server** (Ubuntu with Docker; the Bhoonidhi session is tied to the server's public IP, so it must be fixed):
-
-```bash
-# Copy the project to the server: git clone if the repository is public, otherwise from your machine:
-#   rsync -a --exclude .venv --exclude data --exclude .env ./ user@server:CYBERGIS/
+# Copy the project (without .venv, data and .env) to the server, then:
 cd CYBERGIS
-cp .env.example .env && nano .env            # Bhoonidhi user ID and password
-mkdir -p data                                # optionally copy an existing tile cache into data/
-export PYGEOAPI_SERVER_URL=http://<public-address>
+cp .env.example .env && nano .env                 # Bhoonidhi user ID and password
+echo "PYGEOAPI_SERVER_URL=http://<address>" >> .env
 docker compose up -d --build
 
-# Bhoonidhi login, on the server (OTP is emailed; repeat about every 6 hours)
+# Bhoonidhi login, on the server (an OTP is emailed; repeat when the 6-hour session expires)
 docker compose run --rm app1 python scripts/download_cartodem.py login
 docker compose run --rm app1 python scripts/download_cartodem.py login --otp 123456
 ```
 
-Locally the same stack runs with `HTTP_PORT=8080 PYGEOAPI_SERVER_URL=http://localhost:8080 docker compose up -d`.
+**Adding HTTPS** (needs a domain name; on Azure, a free DNS name label on the public IP gives
+`<label>.<region>.cloudapp.azure.com`):
 
----
-
-## 11. Project layout
-
-```
-.
-├── cartodem_service/
-│   ├── app.py              WSGI entry point: pygeoapi Flask app + request-fixing middleware
-│   ├── provider.py         CartoDEMProvider: window clipping, size limits, CoverageJSON, fetch hook
-│   ├── tiles.py            Tile cache: tile maths, COG conversion, VRT mosaic, on-demand fetching
-│   └── bhoonidhi.py        Bhoonidhi client: STAC search (cached tokens, throttled), OTP login, download
-├── scripts/
-│   ├── download_cartodem.py  Operator CLI: OTP login, pre-fetching an area
-│   ├── prepare_tiles.py      Prepare tiles added by hand to data/raw/
-│   ├── patch_openapi.py      Correct pygeoapi's generated description of the coverage endpoint
-│   └── serve.sh              Start the service
-├── tests/
-│   └── compliance_test.py  39 OGC API - Coverages checks against a running server
-├── loadtest/
-│   ├── coverage.js         k6 load test (geotiff, covjson, mixed scenarios)
-│   └── results/            k6 summaries: Flask dev server and gunicorn runs, cold-fetch test
-├── gunicorn.conf.py        Production server settings
-├── Dockerfile              Service image (Python, GDAL tools, gunicorn)
-├── docker-compose.yml      nginx + two replicas sharing ./data
-├── deploy/
-│   └── nginx.conf          Load balancing, cache, rate limit, gzip
-├── theme/templates/        Dark web theme: base layout, area-picker landing page, conformance page, CSS
-├── pygeoapi-config.yml     Service and collection configuration
-├── requirements.txt
-├── .env.example            Template for Bhoonidhi credentials
-└── data/                   (git-ignored) raw tiles, COG cache, VRT mosaic, session files, locks
+```bash
+docker compose -f docker-compose.yml -f docker-compose.https.yml run --rm --entrypoint certbot certbot \
+  certonly --webroot -w /var/www/certbot --cert-name coverage -d <domain> \
+  --agree-tos --register-unsafely-without-email
+sed -i 's#^PYGEOAPI_SERVER_URL=.*#PYGEOAPI_SERVER_URL=https://<domain>#' .env
+docker compose -f docker-compose.yml -f docker-compose.https.yml up -d
 ```
 
----
-
-## 12. Known limitations
-
-- **Fetching new tiles needs a person every 6 hours.** Bhoonidhi requires an emailed OTP for downloads. When the
-  session expires, cached areas keep working, but requests needing new tiles get 503 until the operator logs in again.
-- **The session is bound to one IP address.** A session created on one machine (or before a home IP change) won't
-  work from another.
-- **It relies on the portal's download URL.** This route isn't in the API specification. Bhoonidhi could change it
-  without notice. The documented `/download` would be preferred if Bhoonidhi fixes it.
-- **The first request for a new tile is slow** (about 10–13 s, longer if Bhoonidhi is busy). It blocks that request.
-- **Size limits.** At most 4 new tiles, 4 deg² of GeoTIFF or 0.1 deg² of CoverageJSON per request. A request for the
-  whole coverage gets 413.
-- **Heights are ellipsoidal (WGS84), not mean sea level.** Users wanting MSL heights must apply a geoid model.
-- **`coverage-datetime` is declared, but CartoDEM has no time axis**, so `datetime` is accepted and ignored.
-- **No scaling or reprojection of the output.** Coverages are returned at the native 1 arc-second grid in EPSG:4326
-  (`bbox-crs` reprojects only the request box).
-- **Tiles not marked `Online = Y`** in Bhoonidhi can't be fetched. They have to be ordered in the portal first (503).
-- **One machine.** The replicas share one server's disk, cache and file locks. Scaling past one machine needs
-  shared storage for the tiles and locks; see future work.
-- **The nginx cache isn't cleared automatically.** Responses are kept 24 h; after changing tiles by hand, clear it with
-  `docker compose exec nginx sh -c 'rm -rf /var/cache/nginx/coverage/*'`.
-- **Cache growth.** About 40 MB per tile, and nothing evicts tiles. All of India would be several hundred tiles.
-- **The web pages load assets from third parties:** Bootstrap (jsDelivr), fonts (Google Fonts), map libraries
-  (unpkg), basemap tiles (Esri) and place search (Nominatim). The API itself doesn't depend on them.
-- **Absent tiles are remembered permanently** (`data/cache/absent.json`). If Bhoonidhi later adds a tile, delete that file.
+The certbot container renews the certificate when it is within 30 days of expiry, and nginx reloads every 6 hours
+to use it.
 
 ---
 
-## 13. Bhoonidhi API findings
+## 8. Running locally
 
-Found while building this, against the [Bhoonidhi API specification](https://bhoonidhi.nrsc.gov.in/bhoonidhi-api/):
+Requirements: Linux or macOS, Python 3.10+, GDAL command-line tools 3.1+ (with the COG driver), and a
+[Bhoonidhi account](https://bhoonidhi.nrsc.gov.in/bhoonidhi/login.html) for fetching new tiles.
+
+```bash
+python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
+cp .env.example .env                                          # Bhoonidhi user ID and password
+
+.venv/bin/python scripts/download_cartodem.py login           # OTP is emailed
+.venv/bin/python scripts/download_cartodem.py login --otp 123456
+.venv/bin/python scripts/download_cartodem.py fetch           # optional: pre-fetch Hyderabad
+
+scripts/serve.sh                                              # http://localhost:5000 (DEV=1 for Flask's dev server)
+.venv/bin/python tests/compliance_test.py                     # 39 compliance checks
+```
+
+Tiles downloaded by hand from the portal can be unzipped into `data/raw/` and prepared with
+`scripts/prepare_tiles.py`. The Docker stack also runs locally:
+`HTTP_PORT=8080 PYGEOAPI_SERVER_URL=http://localhost:8080 docker compose up -d`.
+
+---
+
+## 9. Project layout
+
+```
+cartodem_service/
+  app.py              WSGI app: pygeoapi + middleware (bbox validation, Accept: image/tiff)
+  provider.py         CartoDEMProvider: pixel windows, size limits, CoverageJSON, tile fetching
+  tiles.py            Tile cache: which tiles, locks, conversion, mosaic
+  bhoonidhi.py        Bhoonidhi client: catalogue search, OTP login, tile download
+scripts/
+  download_cartodem.py  OTP login and pre-fetching
+  prepare_tiles.py      Prepare tiles added by hand
+  patch_openapi.py      Correct the coverage endpoint's OpenAPI description
+  serve.sh              Start the service locally
+tests/compliance_test.py  The 39 compliance checks
+loadtest/               k6 load test and results
+theme/templates/        Web pages: base layout, area picker, collections, conformance, Swagger
+deploy/nginx/           nginx: shared settings, request handling, HTTP and HTTPS servers
+Dockerfile              Service image (Python, GDAL tools, gunicorn)
+docker-compose.yml      nginx + two replicas
+docker-compose.https.yml  HTTPS: port 443 and certificate renewal
+gunicorn.conf.py        Server settings (workers, threads, timeout)
+pygeoapi-config.yml     Service and collection configuration
+.env.example            Template for Bhoonidhi credentials
+data/                   (not committed) tiles, mosaic, session
+```
+
+---
+
+## 10. Design decisions
+
+| Decision | Why |
+|---|---|
+| **OGC API - Coverages** rather than WCS 2.0 | The current OGC successor to WCS: same purpose, with REST/JSON, an OpenAPI description and HTML pages |
+| **pygeoapi** with a **custom provider** | pygeoapi implements the standard; the custom provider fixes its raster clipping and is where tile fetching plugs in |
+| **Fetch tiles on demand, then cache** | Keeps Bhoonidhi as the source without depending on it for every request; proxying each request would exceed Bhoonidhi's login and download limits at once |
+| **Synchronous fetching** | Standard clients expect data in the response; the cost is a slow first request per new tile |
+| **Portal download with OTP** | The documented `/download` endpoint rejects every token |
+| **Cloud-Optimized GeoTIFFs + a VRT mosaic** | A small request reads only a few blocks; adding a tile rewrites a few KB, not a whole mosaic |
+| **gunicorn with threads** | Several processes for throughput; threads so a request waiting on Bhoonidhi holds one thread, not a whole process |
+| **nginx + two replicas on one VM** | Caching, rate limiting, HTTPS and failover without changing the service; a VM for a fixed IP and persistent disk |
+
+---
+
+## 11. Known limitations
+
+- **New tiles need a person every 6 hours.** Bhoonidhi requires an emailed OTP. When the session expires, cached
+  areas still work, but new areas return 503 until the operator logs in again.
+- **The session is tied to the server's IP.** It must be created on the machine that runs the service.
+- **The download route isn't in Bhoonidhi's API specification.** It is the portal's own route and could change.
+- **First requests for new tiles are slow** (about 10–13 s, longer when Bhoonidhi is busy).
+- **Size limits:** at most 4 new tiles, 4 deg² of GeoTIFF or 0.1 deg² of CoverageJSON per request.
+- **Heights are ellipsoidal (WGS84),** not mean sea level.
+- **No time axis:** `datetime` is accepted and ignored. **No output scaling or reprojection:** results come on the
+  native 1 arc-second grid in EPSG:4326 (`bbox-crs` only changes how the request box is given).
+- **Tiles not online at Bhoonidhi** have to be ordered in the portal first.
+- **One server:** the replicas share one disk; more servers would need shared storage.
+- **Caches aren't cleared automatically:** coverage responses stay in nginx's cache for 24 h, tiles are never
+  evicted (about 40 MB each), and tiles found to be sea are remembered in `data/cache/absent.json`.
+- **The web pages use third-party assets** (Bootstrap, Google Fonts, map libraries, Esri basemap, Nominatim). The API
+  doesn't depend on them.
+
+---
+
+## 12. Bhoonidhi API findings
 
 | Finding | Detail |
 |---|---|
-| `/download` rejects every token | Always `401 "Invalid session detected! Please login."`. The specification's own wording for 401 is "…Please login **again**", so a different, undocumented check is failing. Search accepts the same token. |
-| Portal downloads need an email OTP | `LoginServlet` `VALIDATE_LOGIN` → OTP mailed → `VERIFY_OTP` → a JWT valid for 6 hours, bound to the client's IP |
-| An empty search returns 404 | `404 {"Description":"NO RESULTS FOUND"}` instead of the STAC API's `200` with an empty `features` list |
-| Under load, search can return an empty 200 | HTTP 200 with an empty body when several searches arrive together |
-| The catalogue needs a login | Even `GET /data/collections/{id}` returns 401 without a token |
-| No data asset in STAC items | CartoDEM items carry only `metadata` and `thumbnail` assets |
-| Inconsistencies in the specification | The logout link points to `/auth/token`; "Getting Started" says inputs go in a POST body while download is GET; error keys appear as both `errorCode` and `ErrorCode` |
+| `/download` rejects every token | Always `401 "Invalid session detected! Please login."` (the specification's wording is "…Please login **again**", so an undocumented check is failing). Tried: fresh and refreshed tokens, without `Bearer`, as a query parameter, POST instead of GET, with the portal logged out, and with an OTP-verified portal token |
+| Portal downloads need an OTP | `LoginServlet`: password → OTP emailed → session token valid for 6 hours, tied to the client's IP |
+| An empty search returns 404 | `404 "NO RESULTS FOUND"` instead of STAC's `200` with no features |
+| Search can return an empty reply under load | HTTP 200 with an empty body when several searches arrive together |
+| The catalogue needs a login | Even `GET /data/collections/{id}` returns 401 |
+| No data asset in STAC items | CartoDEM items have only `metadata` and `thumbnail` |
+| Specification inconsistencies | The logout link points to `/auth/token`; inputs are said to go in a POST body while download is GET; error keys appear as both `errorCode` and `ErrorCode` |
 
 ---
 
-## 14. Future work
+## 13. Future work
 
-- **More than one server:** COGs in object storage (S3, R2 or GCS) read over HTTP, so several servers can share one
-  tile cache, behind a cloud load balancer.
-- **Background tile fetching:** answer a request for a new area with "fetching, retry shortly" and download in the
-  background, so no request waits on Bhoonidhi.
-- **Session renewal:** the portal appears to support renewing a session while it is still fresh. That could stretch one
-  OTP over a longer period.
-- **More of the standard:** the `scaling` and `crs` conformance classes (downsampled overviews and reprojected output).
-- **More data:** the portal's code references CartoDEM at 10 m and 2.5 m, and other Bhoonidhi raster collections could
-  be served the same way.
+- **Background fetching:** answer a request for a new area with "retry shortly" and download in the background, so no
+  request waits on Bhoonidhi.
+- **More than one server:** tiles in object storage (S3, R2 or GCS), shared by several servers.
+- **Longer sessions:** the portal appears to support renewing a session while it is still valid.
+- **More of the standard:** the `scaling` and `crs` conformance classes.
+- **More data:** CartoDEM at 10 m and 2.5 m (referenced in the portal's code) and other Bhoonidhi raster collections.
 
 ---
 
-## 15. Data credit
+## 14. Data credit
 
 CartoDEM is produced by the **National Remote Sensing Centre (NRSC), ISRO** and distributed through
-[Bhoonidhi](https://bhoonidhi.nrsc.gov.in). This service redistributes subsets of it unmodified, apart from lossless
+[Bhoonidhi](https://bhoonidhi.nrsc.gov.in). This service serves subsets of it unmodified apart from lossless
 recompression. Users should follow Bhoonidhi's terms of use for the data.
