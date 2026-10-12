@@ -494,6 +494,7 @@ data/                   (not committed) tiles, mosaic, session
 | `/download` rejects every token | Always returns `401 "Invalid session detected! Please login."` (the specification states "…Please login **again**", which suggests that an undocumented check fails). Variants tested: new and refreshed tokens, without `Bearer`, as a query parameter, POST instead of GET, with the portal logged out, and with an OTP-verified portal token |
 | Portal downloads require an OTP | `LoginServlet`: password → OTP emailed → session token valid for 6 hours and bound to the client IP address |
 | Portal sessions can be renewed | `LoginServlet` with `{"action": "VALIDATE_SESSION"}` and the token in a `token` header returns a new session token without an OTP. An expired token receives HTTP 200 with an empty `JWT` |
+| Tile identifiers below 10°N use a different pattern | Single-digit latitudes are padded with `E` rather than a leading zero: `P5_PAN_CD_N9E_000_E077_000_30m`, then `P5_PAN_CD_N10_000_E077_000_30m` from 10°N. This is not documented; a search for `N09_000` returns no results |
 | An empty search returns 404 | `404 "NO RESULTS FOUND"` instead of the STAC-conformant `200` with no features |
 | Search may return an empty response under load | HTTP 200 with an empty body when several searches arrive simultaneously |
 | The catalogue requires authentication | Even `GET /data/collections/{id}` returns 401 |
