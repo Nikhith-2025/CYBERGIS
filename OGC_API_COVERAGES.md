@@ -476,6 +476,9 @@ data/                   (not committed) tiles, mosaic, session
 - **No time axis:** `datetime` is accepted and ignored. **No output scaling or reprojection:** results are returned on
   the native 1 arc-second grid in EPSG:4326 (`bbox-crs` only affects how the request box is specified).
 - **Tiles not online at Bhoonidhi** must first be ordered through the portal.
+- **No island coverage:** the Bhoonidhi catalogue contains 374 CartoDEM tiles, spanning 8–37°N and 68–97°E, all on
+  the mainland. It contains no tiles for the Andaman and Nicobar Islands or Lakshadweep, so requests for these areas
+  return nodata.
 - **Single server:** the replicas share one disk; additional servers would require shared storage.
 - **Caches are not cleared automatically:** coverage responses remain in the nginx cache for 24 h, tiles are never
   evicted (approximately 40 MB each), and tiles identified as sea are recorded in `data/cache/absent.json`.

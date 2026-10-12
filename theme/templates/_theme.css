@@ -1,7 +1,7 @@
 /* Black and red theme for the coverage service, layered over Bootstrap 5.3 (data-bs-theme="dark") */
 :root,
 [data-bs-theme="dark"] {
-  --bg: #141414;
+  --bg: #110d0e;
   --bg-deep: #0b0b0b;
   --surface: #1c1c1c;
   --surface-2: #262626;
@@ -30,9 +30,17 @@
   --bs-font-monospace: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
-html, body { background: var(--bg); color: var(--text); }
-body { min-height: 100vh; display: flex; flex-direction: column; }
-main { flex: 1 0 auto; background: transparent; padding-bottom: 3rem; }
+html { background: var(--bg-deep); }
+/* Near-black with a faint red glow from the top; fixed so long pages don't band */
+body {
+  color: var(--text);
+  background-image:
+    radial-gradient(ellipse 90% 55% at 50% 0%, rgba(229, 9, 20, .07), transparent 70%),
+    linear-gradient(180deg, #150e0f 0%, #0f0b0c 55%, #0a0909 100%);
+  background-attachment: fixed;
+  min-height: 100vh; display: flex; flex-direction: column;
+}
+main { flex: 1 0 auto; padding-bottom: 3rem; }
 h1, h2, h3, h4 { color: #fff; font-weight: 700; letter-spacing: -0.01em; }
 h2 { font-size: 1.35rem; margin-top: 1.75rem; }
 h3 { font-size: 1.1rem; margin-top: 1.5rem; }
@@ -53,7 +61,7 @@ code { color: #ff8a8f; }
 .site-nav .nav-link.contact:hover { background: var(--red-hover); }
 
 /* --- Breadcrumbs and format switch ---------------------------------------- */
-.crumbs { background: var(--bg); border-bottom: 1px solid #222; padding: .55rem 0; font-size: .875rem; color: var(--muted); }
+.crumbs { border-bottom: 1px solid #222; padding: .55rem 0; font-size: .875rem; color: var(--muted); }
 .crumbs a { color: var(--muted); text-decoration: none; padding: 0 .35rem; }
 .crumbs a:hover { color: #fff; }
 .crumbs .formats a {
