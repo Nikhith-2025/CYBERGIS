@@ -44,7 +44,9 @@ class TileFetchError(Exception):
 
 
 def item_id(lat, lon):
-    return f'P5_PAN_CD_N{lat:02d}_000_E{lon:03d}_000_30m'
+    # Bhoonidhi pads single-digit latitudes with an E, not a zero: N9E_000, then N10_000
+    lat_part = f'{lat:02d}' if lat >= 10 else f'{lat}E'
+    return f'P5_PAN_CD_N{lat_part}_000_E{lon:03d}_000_30m'
 
 
 def cache_path(item):
@@ -78,9 +80,10 @@ def check_tile(src):
             raise ValueError(f'{src.name}: expected 1 band, got {ds.count}')
 
 
-def prepare_tile(src):
-    """Convert one raw tile to a COG in the cache. Returns the cached path."""
-    dst = CACHE_DIR / src.name
+def prepare_tile(src, dst=None):
+    """Convert one raw tile to a COG in the cache (named after the source file
+    unless dst is given). Returns the cached path."""
+    dst = dst or CACHE_DIR / src.name
     if dst.exists():
         return dst
 
@@ -147,7 +150,7 @@ def fetch_tile(item, online):
     src = next(folder.rglob('*_DEM_30m.tif'), None)
     if src is None:
         raise TileFetchError(f'{item}: download contained no DEM GeoTIFF')
-    prepare_tile(src)
+    prepare_tile(src, cache_path(item))
     shutil.rmtree(folder)
 
 
