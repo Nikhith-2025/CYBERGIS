@@ -1,4 +1,4 @@
-"""gunicorn settings for the coverage service (used by scripts/serve.sh).
+"""gunicorn settings for the coverage service (used by scripts/serve.sh and the Docker image).
 
 Threaded workers: a request waiting on a Bhoonidhi tile download holds one
 thread, not a whole process, so cached requests keep being served meanwhile.

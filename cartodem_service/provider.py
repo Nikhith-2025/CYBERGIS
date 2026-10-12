@@ -33,7 +33,7 @@ LOGGER = logging.getLogger(__name__)
 FIELD = 'elevation'
 BAND = 1
 
-# Largest area one request may return, in square degrees (1 deg2 is one tile)
+# Largest area one request may return, in square degrees (one square degree is one tile)
 MAX_DEG2 = {'GTiff': 4.0, 'json': 0.1}
 
 

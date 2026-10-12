@@ -4,8 +4,9 @@
 #   docker compose -f docker-compose.yml -f docker-compose.https.yml up -d
 #
 # The certificate must exist first (obtained once, while plain HTTP is running):
-#   docker compose run --rm certbot certonly --webroot -w /var/www/certbot \
-#     --cert-name coverage -d <domain> --agree-tos --register-unsafely-without-email
+#   docker compose -f docker-compose.yml -f docker-compose.https.yml run --rm --entrypoint certbot certbot \
+#     certonly --webroot -w /var/www/certbot --cert-name coverage -d <domain> \
+#     --agree-tos --register-unsafely-without-email
 
 services:
   nginx:

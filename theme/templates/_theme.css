@@ -71,7 +71,7 @@ code { color: #ff8a8f; }
 .crumbs .formats a:hover { border-color: var(--red); color: #fff; }
 
 /* --- Cards, tables, badges ------------------------------------------------- */
-.card, .card.bg-light {
+.card {
   background: var(--surface) !important;
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -83,8 +83,6 @@ code { color: #ff8a8f; }
   background: var(--red-soft) !important; color: #ff8a8f !important;
   border: 1px solid rgba(229, 9, 20, .35); font-weight: 500;
 }
-.bg-light { background-color: var(--surface) !important; }
-.text-dark { color: var(--text) !important; }
 ul li::marker { color: var(--red); }
 
 /* --- Buttons ---------------------------------------------------------------- */

@@ -8,7 +8,6 @@ The mosaic always spans the full CartoDEM extent, so the service can accept
 requests anywhere in it; areas whose tiles are not cached yet read as nodata
 until ensure_tiles() fetches them.
 """
-import json
 import math
 import os
 import shutil
@@ -133,11 +132,7 @@ def _absent():
 
 def _mark_absent(items):
     with file_lock(LOCK_DIR / 'absent'):
-        known = _absent() | set(items)
-        CACHE_DIR.mkdir(parents=True, exist_ok=True)
-        tmp = ABSENT_FILE.with_name(ABSENT_FILE.name + '.tmp')
-        tmp.write_text(json.dumps(sorted(known)))
-        os.replace(tmp, ABSENT_FILE)
+        bhoonidhi.write_private(ABSENT_FILE, sorted(_absent() | set(items)))
 
 
 def fetch_tile(item, online):

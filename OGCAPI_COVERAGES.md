@@ -5,12 +5,12 @@ built with [pygeoapi](https://pygeoapi.io) on top of the [Bhoonidhi](https://bho
 
 **Live service:** https://cybergis.indiasouthcentral.cloudapp.azure.com
 
-Bhoonidhi distributes CartoDEM only as complete 1°×1° tiles, and downloading them requires a login verified by an
+Bhoonidhi distributes CartoDEM only as complete 1° X 1° tiles, and downloading them requires a login verified by an
 emailed one-time password (OTP). This service allows any client to retrieve **only the area it requires** through a
 single HTTP request, or by selecting an area on the website:
 
 ```bash
-# Elevation of central Hyderabad (approximately 11 × 11 km) as a GeoTIFF: one request, no login
+# Elevation of central Hyderabad (approximately 11 X 11 km) as a GeoTIFF: one request, no login
 curl -o hyderabad.tif \
   "https://cybergis.indiasouthcentral.cloudapp.azure.com/collections/cartodem/coverage?bbox=78.40,17.35,78.50,17.45&f=GTiff"
 ```
@@ -19,27 +19,27 @@ curl -o hyderabad.tif \
 
 ## Contents
 
-1. [Problem Statement](#1-problem-statement)
-2. [System Architecture](#2-system-architecture)
-3. [Dataset](#3-dataset)
-4. [Service Usage](#4-service-usage)
-5. [OGC Compliance](#5-ogc-compliance)
-6. [Performance Evaluation](#6-performance-evaluation)
-7. [Deployment](#7-deployment)
-8. [Local Installation](#8-local-installation)
-9. [Project Structure](#9-project-structure)
-10. [Design Decisions](#10-design-decisions)
-11. [Known Limitations](#11-known-limitations)
-12. [Bhoonidhi API Findings](#12-bhoonidhi-api-findings)
-13. [Future Work](#13-future-work)
-14. [Data Attribution](#14-data-attribution)
+| No. | Section | Contents |
+|---|---|---|
+| 1 | [Problem Statement](#1-problem-statement) | The gap in access to CartoDEM, with evidence |
+| 2 | [System Architecture](#2-system-architecture) | Request processing, on-demand tile retrieval, Bhoonidhi integration and request limits |
+| 3 | [Dataset](#3-dataset) | CartoDEM properties and processing |
+| 4 | [Service Usage](#4-service-usage) | Web interface, endpoints, parameters, examples and response codes |
+| 5 | [OGC Compliance](#5-ogc-compliance) | Conformance classes, test results and corrections to pygeoapi |
+| 6 | [Performance Evaluation](#6-performance-evaluation) | Load-test results |
+| 7 | [Deployment](#7-deployment) | Production setup, server deployment and HTTPS |
+| 8 | [Local Installation](#8-local-installation) | Running the service on a local machine |
+| 9 | [Project Structure](#9-project-structure) | Files and directories |
+| 10 | [Limitations](#10-limitations) | Current constraints of the service |
+| 11 | [Bhoonidhi API Findings](#11-bhoonidhi-api-findings) | Undocumented behaviour of the Bhoonidhi API |
+| 12 | [Data Attribution](#12-data-attribution) | Data source and terms of use |
 
 ---
 
 ## 1. Problem Statement
 
 **No standards-based method exists for requesting a portion of CartoDEM.** Every access route offered by Bhoonidhi
-delivers complete tiles, and none of them is an OGC coverage interface (verified on 2026-10-11).
+delivers complete tiles, and none of them is an OGC coverage interface.
 
 | Access route | Output | Spatial subsetting | OGC coverage interface |
 |---|---|---|---|
@@ -48,33 +48,48 @@ delivers complete tiles, and none of them is an OGC coverage interface (verified
 | Bhoonidhi API `/download` | Complete product by identifier | No | No |
 | Portal map view | WMTS tiles with `format=image/jpeg` | No | No; map images, not elevation values |
 
-**Evidence**
+### 1.1 Evidence
 
-- **Bhoonidhi exposes no coverage endpoints.** The [API specification](https://bhoonidhi.nrsc.gov.in/bhoonidhi-api/)
-  lists only `/auth/token`, `/auth/logout`, `/data/collections`, `/data/search` and `/download`. Requests for `/wcs`,
-  `/collections` and `/conformance` on `bhoonidhi-api.nrsc.gov.in` return `404 Route Not Found`, and
-  `bhoonidhi.nrsc.gov.in/geoserver/ows?service=WCS` returns 404.
-- **The catalogue itself requires authentication.** `GET /data/collections/CartoSat-1_PAN_CartoDEM_30m` returns 401
-  without a token.
-- **The STAC items contain no data assets.** A CartoDEM item lists only a `metadata` and a `thumbnail` asset; the
-  elevation data is available solely as a complete product download.
-- **WCS is disabled on Bhuvan, the other ISRO geoportal.** `bhuvan-vec1…/bhuvan/wcs?request=GetCapabilities` responds
-  with `"Service WCS is disabled"`; `bhuvan-ras1` returns 403 and `bhuvan-ras2` returns 404. Its WMS (6,672 layer
-  entries) contains no national CartoDEM layer, and WMS returns rendered images rather than values.
-- **The documented API cannot download CartoDEM.** With a valid token, `/download` always responds with
-  `401 "Invalid session detected! Please login."`, whereas search accepts the same token (all variants tested; see
-  [Section 12](#12-bhoonidhi-api-findings)). The only working route is the portal login, which requires a
-  **6-digit OTP emailed to the account holder**. The most complete community client,
-  [`bhoonidhi-downloader`](https://pypi.org/project/bhoonidhi-downloader/), relies on the same portal login for this
-  reason.
+**1. Bhoonidhi exposes no coverage endpoints**
 
-**Limitations of STAC.** Bhoonidhi search follows STAC, an OGC Community Standard; however, STAC identifies only
-*which tile* covers an area. It provides no means of requesting *the elevation values within an area*: there is no
-spatial subsetting, no field selection and no choice of output format. These capabilities are provided by OGC API -
-Coverages, as they were by WCS before it.
+The [API specification](https://bhoonidhi.nrsc.gov.in/bhoonidhi-api/) lists only `/auth/token`, `/auth/logout`,
+`/data/collections`, `/data/search` and `/download`. Requests for coverage endpoints all fail:
 
-**Affected users.** Any user who requires elevation for an area rather than a tile (for example, a watershed model, a
-terrain profile in an application, or heights along a road) must log in with an OTP, download complete tiles, and
+| Request | Response |
+|---|---|
+| `bhoonidhi-api.nrsc.gov.in/wcs` | `404 Route Not Found` |
+| `bhoonidhi-api.nrsc.gov.in/collections` | `404 Route Not Found` |
+| `bhoonidhi-api.nrsc.gov.in/conformance` | `404 Route Not Found` |
+| `bhoonidhi.nrsc.gov.in/geoserver/ows?service=WCS` | `404` |
+
+**2. The catalogue itself requires authentication**
+
+`GET /data/collections/CartoSat-1_PAN_CartoDEM_30m` returns `401` without a token.
+
+**3. The STAC items contain no data assets**
+
+A CartoDEM item lists only a `metadata` and a `thumbnail` asset. The elevation data is available solely as a complete
+product download.
+
+**4. The documented API cannot download CartoDEM**
+
+With a valid token, `/download` always responds with `401 "Invalid session detected! Please login."`, whereas search
+accepts the same token. The only working route is the portal login, which requires a **6-digit OTP emailed to the
+account holder**.
+
+The most complete community client, [`bhoonidhi-downloader`](https://pypi.org/project/bhoonidhi-downloader/), relies on
+the same portal login for this reason.
+
+### 1.2 Limitations of STAC
+
+Bhoonidhi search follows STAC, an OGC Community Standard; however, STAC identifies only *which tile* covers an area.
+It provides no means of requesting *the elevation values within an area*: there is no spatial subsetting, no field
+selection and no choice of output format. These capabilities are provided by OGC API - Coverages, as they were by WCS
+before it.
+
+### 1.3 Affected Users
+
+Any user who requires elevation for an area rather than a tile must log in with an OTP, download complete tiles, and
 merge and clip them. This process cannot be automated, because the OTP must be entered by a person.
 
 | Task | Bhoonidhi | This service |
@@ -87,21 +102,30 @@ merge and clip them. This process cannot be automated, because the OTP must be e
 
 ## 2. System Architecture
 
-```
- client (browser, curl, Python, GIS)
-        │  HTTPS
-        ▼
- nginx ── cache, rate limit, gzip, failover
-        │
-        ▼
- 2 replicas: pygeoapi + CartoDEMProvider (gunicorn)
-        │  1. requested area → pixel window on a fixed India grid
-        │  2. size check (413 if too large)
-        │  3. ensure the 1° tiles beneath it are cached ──────▶ Bhoonidhi
-        │       (catalogue search, download, conversion)        (new tiles only)
-        │  4. read the window from the mosaic
-        ▼  5. return GeoTIFF or CoverageJSON
- data/: tile cache (Cloud-Optimized GeoTIFFs) + VRT mosaic, shared by both replicas
+```mermaid
+flowchart TD
+    client["Client<br/>browser, curl, Python, GIS"]
+    nginx["nginx<br/>cache, rate limit, gzip, failover"]
+    app["Coverage service"]
+    window["Convert the requested area<br/>into a pixel window"]
+    size{"Within the<br/>size limits?"}
+    tooLarge["413<br/>Request too large"]
+    cached{"Tiles already<br/>cached?"}
+    fetch["Retrieve the missing tiles<br/>search, download, convert"]
+    bhoonidhi(["Bhoonidhi"])
+    read["Read the window<br/>from the VRT mosaic"]
+    respond["Return GeoTIFF<br/>or CoverageJSON"]
+    store[("data/<br/>tile cache + VRT mosaic")]
+
+    client -->|HTTPS| nginx --> app --> window --> size
+    size -->|No| tooLarge
+    size -->|Yes| cached
+    cached -->|No| fetch
+    bhoonidhi -->|new tiles only| fetch
+    fetch -->|save| store
+    store --> read
+    cached -->|Yes| read
+    read --> respond
 ```
 
 ### 2.1 Request Processing
@@ -111,7 +135,7 @@ merge and clip them. This process cannot be automated, because the OTP must be e
 3. Requests exceeding the size limits receive **413** (see [Section 2.4](#24-request-limits)).
 4. Every 1° tile beneath the window is made available, and is retrieved from Bhoonidhi if necessary
    ([Section 2.2](#22-on-demand-tile-retrieval)).
-5. The window is read from the VRT mosaic; only the required 512×512 blocks of each tile are read from disk.
+5. The window is read from the VRT mosaic; only the required 512 X 512 blocks of each tile are read from disk.
 6. The pixels are returned as GeoTIFF (DEFLATE compressed) or CoverageJSON (nodata as `null`).
 
 The returned pixels are **bit-identical** to the source data; the compliance tests compare them with a GDAL clip.
@@ -121,31 +145,50 @@ The returned pixels are **bit-identical** to the source data; the compliance tes
 The service does not maintain a complete copy of CartoDEM. It **retrieves tiles the first time an area is requested**
 and retains them, so that Bhoonidhi remains the authoritative source and disk space is used only for areas in demand.
 
-```
-area ─▶ which 1° tiles? ─▶ all cached (or known to be sea)? ── yes ─▶ serve
-                                     │ no
-                                     ▼
-                       more than 4 missing? ── yes ─▶ 413
-                                     │ no
-                                     ▼
-          lock the missing tiles ─▶ search Bhoonidhi's catalogue ─▶ download ─▶ convert ─▶ add to mosaic ─▶ serve
-                                     │
-                                     ├─ not in the catalogue (open sea) ─▶ recorded, served as nodata
-                                     └─ not online at Bhoonidhi          ─▶ 503 (must be ordered in the portal)
+```mermaid
+flowchart TD
+    area["Requested area"]
+    tiles["Find the 1° tiles<br/>it covers"]
+    cached{"Tiles cached?"}
+    count{"More than 4<br/>tiles missing?"}
+    tooLarge["413<br/>Request too large"]
+    lock["Lock the missing tiles"]
+    search["Search the<br/>Bhoonidhi catalogue"]
+    found{"Tile in the<br/>catalogue?"}
+    noTile["Record as no tile"]
+    online{"Online at<br/>Bhoonidhi?"}
+    unavailable["503<br/>Must be ordered<br/>in the portal"]
+    download["Download and<br/>convert to COG"]
+    mosaic["Add to the mosaic"]
+    serve["Serve the area"]
+
+    area --> tiles --> cached
+    cached -->|Yes| serve
+    cached -->|No| count
+    count -->|Yes| tooLarge
+    count -->|No| lock --> search --> found
+    found -->|No| noTile
+    found -->|Yes| online
+    online -->|No| unavailable
+    online -->|Yes| download --> mosaic --> serve
+    noTile -->|as nodata| serve
 ```
 
 | Situation | Measured result |
 |---|---|
-| First request for a new area | 200 in approximately **10–13 s** (tile retrieved once) |
+| First request for a new area | 200 in approximately **5–20 s** (tile retrieved once) |
 | Subsequent request for the same area | 200 in approximately **15 ms** |
 | 6 concurrent users requesting the same new tile | **One** download; all 6 receive identical data |
 | An area with no tile (Bay of Bengal) | 200, entirely nodata; repeated requests complete in 7 ms with no Bhoonidhi call |
 
-**Concurrency.** Each tile has a file lock shared by all threads, processes and replicas, so that each tile is
-downloaded only once. Locks are acquired in sorted order to prevent deadlocks, and before the catalogue search, so that
-waiting requests do not repeat the search. The mosaic is rebuilt before the locks are released, so that a waiting
-request never reads an incomplete mosaic. Files are written under temporary names and then renamed into place, so that
-no partially written file is ever read.
+**Concurrency.** Several requests may need the same new tile at the same time. The following measures ensure correct
+behaviour:
+
+- **One download per tile:** each tile has a file lock shared by all threads, processes and replicas.
+- **No deadlocks:** locks are acquired in sorted order.
+- **No repeated searches:** locks are acquired before the catalogue search, so waiting requests do not search again.
+- **No incomplete mosaic:** the mosaic is rebuilt before the locks are released.
+- **No partially written files:** files are written under temporary names and then renamed into place.
 
 ### 2.3 Bhoonidhi Integration
 
@@ -153,6 +196,13 @@ no partially written file is ever read.
 |---|---|---|
 | Catalogue search | Documented API `POST /data/search` | Password login; tokens are **cached and refreshed** (access token 20 min, refresh token 5 h), so that a search does not consume one of the 20 permitted logins per hour |
 | Tile download | Portal `GET /bhoonidhi/data/CARTODEM/P5/PAN/30m/<id>.zip?token=…&product_id=<id>` | A single portal login with a **6-digit OTP emailed to the account holder**; the session is valid for 6 hours and bound to the server IP address, so the service **renews it every hour** without an OTP |
+
+**One-time OTP login.** Bhoonidhi requires an emailed OTP for every portal login, and each session expires after 6
+hours. The service removes the need for repeated logins: the operator enters the OTP **only once**, when the service
+is first set up, and the service then renews the session automatically every hour. No further OTP is required for as
+long as the service keeps running; in operation, the session has remained valid well beyond its original 6-hour
+lifetime. A new OTP login is needed only if the service is stopped for more than 6 hours (see
+[Section 10](#10-limitations)).
 
 - **Compliance with Bhoonidhi limits:** searches are spaced at least 0.5 s apart across all processes (Bhoonidhi
   permits 3 per second), and a single request may retrieve at most 4 new tiles (Bhoonidhi permits 5 concurrent
@@ -171,10 +221,10 @@ no partially written file is ever read.
 |---|---|---|
 | New tiles retrieved per request | **4** | Sufficient for any city or district; remains within the Bhoonidhi limit of 5 concurrent downloads and the daily quota |
 | Largest GeoTIFF | **4 square degrees** (approximately 4 tiles) | Limits memory per request (approximately 200 MB at most) |
-| Largest CoverageJSON | **0.1 square degrees** | CoverageJSON is a text format; 0.04 deg² already amounts to approximately 18 MB |
+| Largest CoverageJSON | **0.1 square degrees** | CoverageJSON is a text format; 0.04 square degrees already amounts to approximately 18 MB |
 
-A request without an area refers to the entire coverage (960 square degrees) and receives a 413 response that
-explains the limits.
+A request that specifies no area asks for the entire coverage (960 square degrees, far above the 4-square-degree
+limit), so it receives a 413 response explaining the limits and asking for a smaller area.
 
 ---
 
@@ -187,17 +237,17 @@ explains the limits.
 | Resolution | 1 arc-second (approximately 30 m) |
 | Accuracy | 8 m vertical (LE90), 15 m horizontal (CE90) |
 | Coordinates | WGS84 longitude/latitude (EPSG:4326) |
-| Tiles | 1°×1°, 3600 × 3600 pixels, with identifiers such as `P5_PAN_CD_N17_000_E078_000_30m` |
+| Tiles | 1° X 1°, 3600 X 3600 pixels, with identifiers such as `P5_PAN_CD_N17_000_E078_000_30m` |
 | Values | Float32 metres, nodata −32768 |
-| Served extent | 68–98°E, 6–38°N (India and surrounding regions) |
+| Served extent | 68-98°E, 6-38°N (India and surrounding regions) |
 
-- **Heights are referenced to the WGS84 ellipsoid, not to mean sea level.** Values are 50–90 m lower than commonly
+- **Heights are referenced to the WGS84 ellipsoid, not to mean sea level.** Values are 50-90 m lower than commonly
   cited heights (Delhi approximately 163 m, Bengaluru approximately 821 m, Hyderabad approximately 460 m), which is
-  consistent with the geoid–ellipsoid separation over India.
+  consistent with the geoid ellipsoid separation over India.
 - **The dataset is a surface model** derived from optical imagery; heights therefore include buildings and vegetation.
 
 **Processing.** Each downloaded tile (a 44.5 MB archive containing a 52 MB GeoTIFF) is losslessly converted into a
-**Cloud-Optimized GeoTIFF** with 512×512 internal tiles, DEFLATE compression and overviews, of approximately 40 MB.
+**Cloud-Optimized GeoTIFF** with 512 X 512 internal tiles, DEFLATE compression and overviews, of approximately 40 MB.
 The raw download is then deleted. A GDAL **VRT mosaic** (a few kilobytes of XML) references all cached tiles on a
 single fixed grid covering the entire extent, so that every request maps to the same pixel grid regardless of whether
 its tiles are already cached.
@@ -208,10 +258,12 @@ its tiles are already cached.
 
 ### 4.1 Web Interface
 
-The home page is an **area selector**: users can search for a place (for example, "Kurnool") or select **Draw area**
+The home page is an **area selector**: users can search for a place (for example, "Hyderabad") or select **Draw area**
 and click two corners. The page displays the size of the box, checks it against the limits, and offers **Download
-GeoTIFF**, **View on map** (terrain colours) and the exact request URL. It only constructs the standard request
-described below and has no API of its own. Place search uses the OpenStreetMap Nominatim service.
+GeoTIFF**, **View on map** and the exact request URL. The page uses no private endpoint: it builds the same public
+coverage request described in [Section 4.2](#42-endpoints), which any client can send directly. The page requests
+areas with the `bbox` parameter; the `subset` and `properties` parameters ([Section 4.3](#43-coverage-parameters)) are
+available to API clients. Place names are converted to coordinates by the OpenStreetMap Nominatim service.
 
 The remaining pages (collections, collection details, schema, conformance and the Swagger API documentation) allow the
 service to be browsed. Every endpoint also returns HTML when requested with `?f=html`.
@@ -270,7 +322,7 @@ with MemoryFile(resp.content) as mem, mem.open() as src:
 
 | Status | Condition |
 |---|---|
-| `200` | The requested area, as `image/tiff` or `application/prs.coverage+json`. Areas without a tile (open sea) are nodata |
+| `200` | The requested area, as `image/tiff` or `application/prs.coverage+json`. Areas without a Bhoonidhi tile (for example, open sea) are nodata |
 | `400` | Malformed `bbox` or `subset`, unknown axis or property, area outside the extent, or `bbox` combined with `subset` |
 | `404` | Unknown collection |
 | `413` | Request too large: the area limit is exceeded, or more than 4 new tiles are required |
@@ -287,7 +339,7 @@ Implemented conformance classes (OGC API - Coverages Part 1):
 `core` · `oas30` · `html` · `geodata-coverage` · `coverage-subset` · `coverage-rangesubset` · `coverage-bbox` · `coverage-datetime`
 
 `tests/compliance_test.py` tests every class against a running server with real requests and verifies the returned
-GeoTIFFs with GDAL. **Result: all 39 checks pass**, on both the live server and a local installation.
+GeoTIFFs with GDAL. **All 39 checks passed**, on both the live server and a local installation.
 
 | Class | Checks | Verified behaviour |
 |---|---|---|
@@ -313,10 +365,6 @@ small middleware component correct them:
 | The band was unnamed (`null`) and had no units | Named `elevation`, in metres |
 | A request without parameters returned the XML of the mosaic | A GeoTIFF is returned, or 413 if the request is too large |
 
-The OpenAPI document generated by pygeoapi also described the coverage endpoint as a Features endpoint (GeoJSON,
-"selects features", no GeoTIFF). `scripts/patch_openapi.py` corrects this description; the result validates as
-OpenAPI 3.0.
-
 ---
 
 ## 6. Performance Evaluation
@@ -325,11 +373,14 @@ The service was load-tested with [k6](https://k6.io) at **100 concurrent users**
 error rate below 1%), using random areas within cached tiles so that the test measures the service rather than
 Bhoonidhi. The service and k6 ran on the same 16-core machine.
 
-| Scenario | Flask development server (1 process) | gunicorn (8 processes × 4 threads) |
+| Scenario | Flask development server (1 process) | gunicorn (8 processes X 4 threads) |
 |---|---|---|
-| Mixed: 70% GeoTIFF, 15% CoverageJSON, 15% pages | 107 req/s, p95 1.05 s ✗ | **500 req/s, p95 289 ms** ✓ |
-| GeoTIFF, 5–15 km areas | 168 req/s, p95 631 ms ✗ | **478 req/s, p95 319 ms** ✓ |
-| CoverageJSON, 2–5 km areas | 55 req/s, p95 2.07 s ✗ | **394 req/s, p95 369 ms** ✓ |
+| Mixed: 70% GeoTIFF, 15% CoverageJSON, 15% pages | 107 req/s, p95 1.05 s  | **500 req/s, p95 289 ms**  |
+| GeoTIFF, 5–15 km areas | 168 req/s, p95 631 ms  | **478 req/s, p95 319 ms**  |
+| CoverageJSON, 2–5 km areas | 55 req/s, p95 2.07 s  | **394 req/s, p95 369 ms**  |
+
+In the mixed scenario, each request is chosen at random: 70% GeoTIFF downloads, 15% CoverageJSON requests and 15%
+ordinary pages (landing page, collections, conformance), approximating typical use.
 
 A total of 383,066 requests were served without errors. Summaries are available in `loadtest/results/`.
 
@@ -349,9 +400,25 @@ k6 run -e BASE=https://<host> -e SCENARIO=mixed loadtest/coverage.js
 
 The live service runs on an Azure virtual machine (Ubuntu 24.04, 2 CPUs, India South Central) using Docker Compose:
 
-```
-Internet ──HTTPS──▶ nginx ──┬──▶ app1 (gunicorn) ──┐
-                            └──▶ app2 (gunicorn) ──┴──▶ data/ (tiles, mosaic, Bhoonidhi session)
+```mermaid
+flowchart TD
+    client["Client<br/>browser, curl, Python, GIS"]
+    subgraph vm["Azure virtual machine (Docker Compose)"]
+        nginx["nginx<br/>HTTPS, cache, rate limit, failover"]
+        app1["app1<br/>Coverage service"]
+        app2["app2<br/>Coverage service"]
+        data[("data/<br/>tiles, mosaic, Bhoonidhi session")]
+        certbot["certbot<br/>certificate renewal"]
+    end
+    bhoonidhi(["Bhoonidhi"])
+
+    client -->|HTTPS| nginx
+    nginx --> app1
+    nginx --> app2
+    app1 --> data
+    app2 --> data
+    bhoonidhi -->|new tiles| data
+    certbot -.->|certificate| nginx
 ```
 
 | Feature | Configuration |
@@ -370,7 +437,6 @@ Bhoonidhi.
 **Deployment on a server** (Ubuntu with Docker and a fixed public IP address):
 
 ```bash
-# Copy the project (excluding .venv, data and .env) to the server, then:
 cd CYBERGIS
 cp .env.example .env && nano .env                 # Bhoonidhi user ID and password
 echo "PYGEOAPI_SERVER_URL=http://<address>" >> .env
@@ -381,8 +447,7 @@ docker compose up -d --build
 docker compose run --rm app1 python scripts/download_cartodem.py login
 ```
 
-**Enabling HTTPS** requires a domain name. On Azure, a free DNS name label on the public IP address provides
-`<label>.<region>.cloudapp.azure.com`:
+**Enabling HTTPS** (requires a domain name):
 
 ```bash
 docker compose -f docker-compose.yml -f docker-compose.https.yml run --rm --entrypoint certbot certbot \
@@ -409,7 +474,7 @@ cp .env.example .env                                          # Bhoonidhi user I
 .venv/bin/python scripts/download_cartodem.py login           # once: an OTP is emailed and requested
 .venv/bin/python scripts/download_cartodem.py fetch           # optional: pre-fetch Hyderabad
 
-scripts/serve.sh                                              # http://localhost:5000 (DEV=1 for the Flask development server)
+scripts/serve.sh
 .venv/bin/python tests/compliance_test.py                     # 39 compliance checks
 ```
 
@@ -447,22 +512,7 @@ data/                   (not committed) tiles, mosaic, session
 
 ---
 
-## 10. Design Decisions
-
-| Decision | Rationale |
-|---|---|
-| **OGC API - Coverages** rather than WCS 2.0 | The current OGC successor to WCS: the same purpose, with REST/JSON, an OpenAPI description and HTML pages |
-| **pygeoapi** with a **custom provider** | pygeoapi implements the standard; the custom provider corrects its raster clipping and integrates tile retrieval |
-| **On-demand tile retrieval with caching** | Keeps Bhoonidhi as the source without depending on it for every request; forwarding every request would immediately exceed the Bhoonidhi login and download limits |
-| **Synchronous retrieval** | Standard clients expect data in the response; the cost is a slower first request for each new tile |
-| **Portal download with a single OTP login and session renewal** | The documented `/download` endpoint rejects every token; renewing the portal session keeps the single OTP login valid |
-| **Cloud-Optimized GeoTIFFs and a VRT mosaic** | A small request reads only a few blocks; adding a tile rewrites a few kilobytes rather than an entire mosaic |
-| **gunicorn with threads** | Multiple processes provide throughput; threads ensure that a request waiting on Bhoonidhi occupies one thread rather than an entire process |
-| **nginx and two replicas on one virtual machine** | Caching, rate limiting, HTTPS and failover without changes to the service; a virtual machine provides a fixed IP address and persistent storage |
-
----
-
-## 11. Known Limitations
+## 10. Limitations
 
 - **One OTP login is required after each prolonged outage.** The service renews the session while it is running; if it
   is stopped for more than 6 hours, the session expires. Cached areas remain available, but requests for new areas
@@ -470,51 +520,52 @@ data/                   (not committed) tiles, mosaic, session
 - **The session is bound to the server IP address.** It must be created on the machine that runs the service.
 - **The download route is not part of the Bhoonidhi API specification.** It is the internal route of the portal and
   may change without notice.
-- **First requests for new tiles are slow** (approximately 10–13 s, and longer when Bhoonidhi is under heavy load).
-- **Size limits:** at most 4 new tiles, 4 deg² of GeoTIFF or 0.1 deg² of CoverageJSON per request.
+- **First requests for new tiles are slow** (approximately 5–20 s, depending on the load on Bhoonidhi).
+- **Size limits:** at most 4 new tiles, 4 square degrees as GeoTIFF or 0.1 square degrees as CoverageJSON per request.
 - **Heights are ellipsoidal (WGS84),** not referenced to mean sea level.
-- **No time axis:** `datetime` is accepted and ignored. **No output scaling or reprojection:** results are returned on
-  the native 1 arc-second grid in EPSG:4326 (`bbox-crs` only affects how the request box is specified).
-- **Tiles not online at Bhoonidhi** must first be ordered through the portal.
 - **No island coverage:** the Bhoonidhi catalogue contains 374 CartoDEM tiles, spanning 8–37°N and 68–97°E, all on
   the mainland. It contains no tiles for the Andaman and Nicobar Islands or Lakshadweep, so requests for these areas
   return nodata.
 - **Single server:** the replicas share one disk; additional servers would require shared storage.
 - **Caches are not cleared automatically:** coverage responses remain in the nginx cache for 24 h, tiles are never
-  evicted (approximately 40 MB each), and tiles identified as sea are recorded in `data/cache/absent.json`.
-- **The web pages use third-party assets** (Bootstrap, Google Fonts, map libraries, Esri basemap, Nominatim). The API
-  does not depend on them.
+  evicted (approximately 40 MB each), and areas without a Bhoonidhi tile are recorded in `data/cache/absent.json`.
 
 ---
 
-## 12. Bhoonidhi API Findings
+## 11. Bhoonidhi API Findings
+
+Behaviour of the Bhoonidhi API observed during development that its specification does not describe.
+
+### 11.1 Login and Download
 
 | Finding | Detail |
 |---|---|
-| `/download` rejects every token | Always returns `401 "Invalid session detected! Please login."` (the specification states "…Please login **again**", which suggests that an undocumented check fails). Variants tested: new and refreshed tokens, without `Bearer`, as a query parameter, POST instead of GET, with the portal logged out, and with an OTP-verified portal token |
-| Portal downloads require an OTP | `LoginServlet`: password → OTP emailed → session token valid for 6 hours and bound to the client IP address |
-| Portal sessions can be renewed | `LoginServlet` with `{"action": "VALIDATE_SESSION"}` and the token in a `token` header returns a new session token without an OTP. An expired token receives HTTP 200 with an empty `JWT` |
-| Tile identifiers below 10°N use a different pattern | Single-digit latitudes are padded with `E` rather than a leading zero: `P5_PAN_CD_N9E_000_E077_000_30m`, then `P5_PAN_CD_N10_000_E077_000_30m` from 10°N. This is not documented; a search for `N09_000` returns no results |
-| An empty search returns 404 | `404 "NO RESULTS FOUND"` instead of the STAC-conformant `200` with no features |
-| Search may return an empty response under load | HTTP 200 with an empty body when several searches arrive simultaneously |
-| The catalogue requires authentication | Even `GET /data/collections/{id}` returns 401 |
-| STAC items contain no data asset | CartoDEM items contain only `metadata` and `thumbnail` |
-| Inconsistencies in the specification | The logout link points to `/auth/token`; inputs are described as a POST body, whereas download uses GET; error keys appear as both `errorCode` and `ErrorCode` |
+| `/download` rejects every token | Always returns `401 "Invalid session detected! Please login."` |
+| Portal downloads require an OTP | Password, then an OTP sent by email, then a session token valid for 6 hours and tied to the client IP address |
+| Portal sessions can be renewed | `VALIDATE_SESSION` with the current token returns a new token without an OTP; an expired token receives an empty one |
+
+The `/download` variants tested were new and refreshed tokens, the token with and without `Bearer`, the token as a
+query parameter, POST instead of GET, the portal logged out, and an OTP-verified portal token.
+
+### 11.2 Search and Catalogue
+
+| Finding | Detail |
+|---|---|
+| Tile IDs below 10°N are padded with `E` | `N9E_000` rather than `N09_000`; from 10°N onwards the pattern is `N10_000` |
+| A search with no results returns 404 | `404 "NO RESULTS FOUND"` instead of `200` with an empty list |
+| Searches may return an empty response under load | HTTP 200 with an empty body when several searches arrive together |
+| The catalogue requires login | Even `GET /data/collections/{id}` returns 401 |
+| Items contain no data link | CartoDEM items contain only `metadata` and `thumbnail` |
+
+### 11.3 Specification
+
+- The logout link points to `/auth/token`.
+- Inputs are described as a POST body, whereas download uses GET.
+- Error keys appear as both `errorCode` and `ErrorCode`.
 
 ---
 
-## 13. Future Work
-
-- **Background retrieval:** respond to a request for a new area with a "retry shortly" response and download the tile
-  in the background, so that no request waits on Bhoonidhi.
-- **Multiple servers:** store tiles in object storage (S3, R2 or GCS) shared by several servers.
-- **Further conformance classes:** `scaling` and `crs`.
-- **Additional data:** CartoDEM at 10 m and 2.5 m (referenced in the portal source code) and other Bhoonidhi raster
-  collections.
-
----
-
-## 14. Data Attribution
+## 12. Data Attribution
 
 CartoDEM is produced by the **National Remote Sensing Centre (NRSC), ISRO** and distributed through
 [Bhoonidhi](https://bhoonidhi.nrsc.gov.in). This service provides subsets of the data without modification, apart from
